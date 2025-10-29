@@ -1,0 +1,190 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rlaif-trading"
+version = "0.1.0"
+description = "RLAIF-powered stock prediction system with Claude API and foundation models"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "RLAIF Trading Team"}
+]
+keywords = ["trading", "rlaif", "reinforcement-learning", "llm", "claude", "finance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+dependencies = [
+    # Core
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "scipy>=1.10.0",
+
+    # ML/DL
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "stable-baselines3>=2.0.0",
+
+    # Time Series Foundation Models
+    "timesfm[torch]>=0.1.0",
+
+    # LLM Integration
+    "anthropic>=0.18.0",
+    "langchain>=0.1.0",
+    "langchain-anthropic>=0.1.0",
+    "langchain-community>=0.0.20",
+
+    # NLP & Embeddings
+    "sentence-transformers>=2.2.0",
+    "faiss-cpu>=1.7.4",  # Use faiss-gpu for production
+    "tiktoken>=0.5.0",
+
+    # Financial NLP
+    "yfinance>=0.2.0",
+    "alpaca-py>=0.20.0",
+
+    # Feature Engineering
+    "ta-lib>=0.4.28",  # Technical analysis
+    "ta>=0.11.0",  # Alternative TA library (pure Python)
+
+    # Feature Store
+    "feast[redis]>=0.35.0",
+
+    # Data Processing
+    "pyarrow>=12.0.0",
+    "fastparquet>=2023.4.0",
+
+    # API & Deployment
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.1.0",
+
+    # Monitoring & Logging
+    "evidently>=0.4.0",
+    "prometheus-client>=0.19.0",
+    "python-json-logger>=2.0.7",
+
+    # Experiment Tracking
+    "mlflow>=2.10.0",
+    "wandb>=0.16.0",
+
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "tqdm>=4.66.0",
+    "click>=8.1.0",
+    "pyyaml>=6.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "selenium>=4.17.0",  # For SEC filings scraping
+
+    # Testing & Quality
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
+    "black>=24.0.0",
+    "ruff>=0.2.0",
+    "mypy>=1.8.0",
+
+    # Optimization
+    "optuna>=3.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyter>=1.0.0",
+    "ipykernel>=6.29.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "plotly>=5.18.0",
+]
+
+gpu = [
+    "faiss-gpu>=1.7.4",
+]
+
+all = [
+    "rlaif-trading[dev,gpu]",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/rlaif-trading"
+Documentation = "https://github.com/yourusername/rlaif-trading/blob/main/README.md"
+Repository = "https://github.com/yourusername/rlaif-trading"
+
+[project.scripts]
+rlaif-train = "src.train:main"
+rlaif-backtest = "src.backtesting.runner:main"
+rlaif-serve = "src.deployment.api.main:main"
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.setuptools.package-data]
+src = ["*.yaml", "*.json"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501", # line too long (handled by black)
+    "B008", # do not perform function calls in argument defaults
+    "C901", # too complex
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "stable_baselines3.*",
+    "ta.*",
+    "talib.*",
+    "alpaca.*",
+    "feast.*",
+    "evidently.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--verbose",
+    "--cov=src",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]

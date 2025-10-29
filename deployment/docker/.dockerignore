@@ -1,0 +1,80 @@
+# Dockerignore for optimized container builds
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (not needed in container)
+*.md
+docs/
+LICENSE
+
+# Tests (not needed in container)
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data (should be mounted or fetched at runtime)
+historical_data/
+data_cache/
+*.csv
+*.parquet
+*.db
+*.sqlite
+
+# Logs (should be in volumes)
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Model checkpoints (should be downloaded during build or mounted)
+models/checkpoints/*.pt
+models/checkpoints/*.pth
+
+# Experiment tracking
+mlruns/
+wandb/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# macOS
+.DS_Store
+
+# Large files
+*.zip
+*.gz
+*.tar
+*.tar.gz
