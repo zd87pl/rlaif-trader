@@ -17,6 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
     python3.11-dev \
+    python3.11-venv \
     python3-pip \
     build-essential \
     git \
