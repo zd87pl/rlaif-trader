@@ -35,27 +35,41 @@ ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
 COPY pyproject.toml ./
 
-# Install Python dependencies (excluding heavy optional deps)
+# Install Python dependencies in stages for better build caching and error visibility
+
+# Stage 1: Install PyTorch with CUDA 12.1 support
+RUN pip install --no-cache-dir torch==2.2.0 --index-url https://download.pytorch.org/whl/cu121
+
+# Stage 2: Core ML/AI libraries
 RUN pip install --no-cache-dir \
-    torch==2.2.0 \
     transformers==4.38.0 \
-    anthropic==0.18.1 \
+    sentence-transformers==2.3.1 \
+    numpy==1.26.4
+
+# Stage 3: API and web framework
+RUN pip install --no-cache-dir \
     fastapi==0.109.2 \
     uvicorn[standard]==0.27.1 \
     pydantic==2.6.1 \
-    pydantic-settings==2.1.0 \
-    numpy==1.26.4 \
+    pydantic-settings==2.1.0
+
+# Stage 4: Data processing
+RUN pip install --no-cache-dir \
     pandas==2.2.0 \
-    alpaca-py==0.20.2 \
-    sentence-transformers==2.3.1 \
-    faiss-gpu==1.7.4 \
     python-dotenv==1.0.1 \
     python-json-logger==2.0.7 \
     pyyaml==6.0.1 \
     requests==2.31.0
 
-# Install TA library (pure Python version to avoid compilation issues)
-RUN pip install --no-cache-dir ta==0.11.0
+# Stage 5: Trading and domain-specific
+RUN pip install --no-cache-dir \
+    anthropic==0.18.1 \
+    alpaca-py==0.20.2 \
+    ta==0.11.0
+
+# Stage 6: FAISS (may need conda, try CPU version if GPU fails)
+RUN pip install --no-cache-dir faiss-cpu==1.7.4 || \
+    pip install --no-cache-dir faiss-gpu==1.7.4
 
 # Optional: Install TimesFM if available (may increase image size)
 # RUN pip install --no-cache-dir timesfm[torch] || echo "TimesFM not available"
