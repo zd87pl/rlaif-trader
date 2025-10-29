@@ -1,0 +1,58 @@
+# Minimal Dockerfile for faster builds and testing
+# Use this for development/testing before full production build
+# Build: docker build -f deployment/docker/Dockerfile.minimal -t rlaif-trader:minimal .
+
+FROM python:3.11-slim
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install minimal Python dependencies (no GPU, no heavy ML)
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install \
+    fastapi==0.109.2 \
+    uvicorn[standard]==0.27.1 \
+    pydantic==2.6.1 \
+    pydantic-settings==2.1.0 \
+    numpy==1.26.4 \
+    pandas==2.2.0 \
+    python-dotenv==1.0.1 \
+    python-json-logger==2.0.7 \
+    pyyaml==6.0.1 \
+    requests==2.31.0 \
+    anthropic==0.18.1
+
+# Copy application code
+COPY src/ /app/src/
+COPY configs/ /app/configs/
+COPY deployment/api/ /app/deployment/api/
+
+# Create necessary directories
+RUN mkdir -p /app/data /app/logs /app/model_cache
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Expose port
+EXPOSE 8000
+
+# Set environment variables
+ENV APP_ENV=production \
+    LOG_LEVEL=INFO \
+    API_HOST=0.0.0.0 \
+    API_PORT=8000
+
+# Run the API
+CMD ["uvicorn", "deployment.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
