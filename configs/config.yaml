@@ -1,0 +1,706 @@
+# Main Configuration File for RLAIF Trading Pipeline
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  # Asset universe
+  assets:
+    - AAPL
+    - MSFT
+    - GOOGL
+    - AMZN
+    - NVDA
+    - TSLA
+    - META
+    - JPM
+    - V
+    - WMT
+
+  # Data sources
+  sources:
+    market_data:
+      provider: alpaca
+      bar_interval: 1Min
+      lookback_days: 365
+
+    news:
+      providers:
+        - finnhub
+        - polygon
+      lookback_days: 7
+
+    fundamentals:
+      provider: sec_edgar
+      filings:
+        - 10-K
+        - 10-Q
+        - 8-K
+      lookback_years: 3
+
+  # Data processing
+  processing:
+    fill_method: forward
+    outlier_threshold: 5.0  # Standard deviations
+    min_trading_days: 252
+
+# =============================================================================
+# Feature Engineering
+# =============================================================================
+features:
+  technical:
+    # Trend indicators
+    trend:
+      - name: SMA
+        periods: [20, 50, 100, 200]
+      - name: EMA
+        periods: [12, 26, 50]
+      - name: MACD
+        fast: 12
+        slow: 26
+        signal: 9
+      - name: ADX
+        period: 14
+
+    # Momentum indicators
+    momentum:
+      - name: RSI
+        period: 14
+      - name: Stochastic
+        k_period: 14
+        d_period: 3
+      - name: ROC
+        period: 12
+      - name: Williams_R
+        period: 14
+
+    # Volatility indicators
+    volatility:
+      - name: Bollinger_Bands
+        period: 20
+        std_dev: 2
+      - name: ATR
+        period: 14
+      - name: Keltner_Channels
+        period: 20
+        atr_multiplier: 2
+
+    # Volume indicators
+    volume:
+      - name: OBV
+      - name: MFI
+        period: 14
+      - name: VWAP
+      - name: Volume_SMA
+        periods: [20, 50]
+
+  sentiment:
+    model: yiyanghkust/finbert-tone
+    batch_size: 32
+    max_length: 512
+    aggregation: weighted_mean  # Options: mean, weighted_mean, max
+    confidence_threshold: 0.6
+
+  fundamental:
+    ratios:
+      - pe_ratio
+      - price_to_book
+      - debt_to_equity
+      - current_ratio
+      - roe
+      - roa
+      - profit_margin
+      - revenue_growth
+      - earnings_growth
+
+  regime:
+    method: volatility_quantile  # Options: volatility_quantile, hmm, clustering
+    quantiles: 3  # Low, medium, high volatility
+    window: 60
+
+# =============================================================================
+# Foundation Model Configuration
+# =============================================================================
+foundation_model:
+  # Model selection
+  model_type: timesfm  # Options: timesfm, ttm
+
+  # TimesFM configuration
+  timesfm:
+    model_name: google/timesfm-1.0-200m
+    context_length: 512
+    horizon: 128
+    num_layers: 20
+    num_heads: 16
+
+  # TTM configuration
+  ttm:
+    model_name: ibm/ttm-research-r1
+    context_length: 512
+    patch_size: 16
+
+  # Fine-tuning
+  fine_tune:
+    enabled: true
+    epochs: 50
+    learning_rate: 1e-4
+    batch_size: 64
+    validation_split: 0.2
+    early_stopping_patience: 10
+
+  # Inference
+  inference:
+    batch_size: 128
+    output_uncertainty: true
+
+# =============================================================================
+# LLM Agent Configuration
+# =============================================================================
+llm:
+  # Base LLM
+  model: claude-3-5-sonnet-20241022
+  temperature: 0.7
+  max_tokens: 4096
+  top_p: 0.95
+
+  # Multi-agent system
+  agents:
+    fundamental_analyst:
+      enabled: true
+      system_prompt: |
+        You are an expert fundamental analyst specializing in equity research.
+        Analyze financial statements, growth metrics, competitive positioning,
+        and management quality. Provide quantitative scores and reasoning.
+      tools:
+        - calculator
+        - financial_ratio_calculator
+        - growth_analyzer
+
+    sentiment_analyst:
+      enabled: true
+      system_prompt: |
+        You are an expert sentiment analyst for financial markets.
+        Analyze news, social media, and earnings call transcripts.
+        Assess market psychology, momentum, and narrative shifts.
+      tools:
+        - news_aggregator
+        - sentiment_scorer
+        - novelty_detector
+
+    technical_analyst:
+      enabled: true
+      system_prompt: |
+        You are an expert technical analyst specializing in chart patterns
+        and indicator analysis. Identify trends, support/resistance levels,
+        and entry/exit points.
+      tools:
+        - indicator_calculator
+        - pattern_matcher
+        - trendline_estimator
+
+    risk_analyst:
+      enabled: true
+      system_prompt: |
+        You are an expert risk analyst for portfolio management.
+        Assess volatility, correlations, tail risks, and position sizing.
+        Recommend risk-adjusted allocations.
+      tools:
+        - var_calculator
+        - correlation_analyzer
+        - stress_tester
+
+    manager:
+      enabled: true
+      system_prompt: |
+        You are a portfolio manager synthesizing insights from specialist
+        analysts. Facilitate structured debate, resolve conflicts, and make
+        final trading decisions with clear reasoning.
+      debate_rounds: 2
+      consensus_threshold: 0.7
+
+  # RAG configuration
+  rag:
+    enabled: true
+    vector_store: faiss
+    embedding_model: sentence-transformers/all-mpnet-base-v2
+    chunk_size: 512
+    chunk_overlap: 50
+    top_k: 5
+    similarity_threshold: 0.7
+
+    # Document sources
+    documents:
+      - type: sec_filings
+        path: ./data/sec_filings
+      - type: earnings_calls
+        path: ./data/earnings_calls
+      - type: news
+        path: ./data/news
+      - type: analyst_reports
+        path: ./data/analyst_reports
+
+  # Chain-of-Thought prompting
+  cot:
+    enabled: true
+    steps:
+      - analyze_fundamentals
+      - assess_sentiment
+      - evaluate_technicals
+      - consider_risks
+      - synthesize_decision
+
+# =============================================================================
+# RL Configuration
+# =============================================================================
+rl:
+  # Algorithm selection
+  algorithm: ensemble  # Options: td3, sac, ppo, ensemble
+
+  # Ensemble configuration
+  ensemble:
+    agents:
+      - type: td3
+        seed: 42
+        weight: 0.3
+      - type: td3
+        seed: 123
+        weight: 0.3
+      - type: sac
+        seed: 42
+        weight: 0.2
+      - type: sac
+        seed: 123
+        weight: 0.2
+
+    aggregation: weighted_average  # Options: average, weighted_average, majority_vote
+
+  # TD3 configuration
+  td3:
+    hidden_dim: 256
+    learning_rate_actor: 3e-4
+    learning_rate_critic: 3e-4
+    gamma: 0.99
+    tau: 0.005
+    policy_delay: 2
+    policy_noise: 0.2
+    noise_clip: 0.5
+    n_quantiles: 51
+
+  # SAC configuration
+  sac:
+    hidden_dim: 256
+    learning_rate_actor: 3e-4
+    learning_rate_critic: 3e-4
+    learning_rate_alpha: 3e-4
+    gamma: 0.99
+    tau: 0.005
+    target_entropy_scale: 0.89
+    n_quantiles: 51
+
+  # Experience replay
+  replay_buffer:
+    size: 200000
+    prioritized: true
+    alpha: 0.6
+    beta_start: 0.4
+    beta_end: 1.0
+    n_step: 3
+
+  # Training
+  training:
+    max_episodes: 1000
+    max_steps_per_episode: 1000
+    batch_size: 256
+    update_frequency: 1
+    warmup_steps: 10000
+
+    # Evaluation
+    eval_frequency: 50
+    eval_episodes: 10
+
+    # Early stopping
+    patience: 100
+    min_delta: 0.01
+    ema_alpha: 0.1
+
+  # State space
+  state:
+    lookback: 240  # Time steps
+    features:
+      - price_history
+      - technical_indicators
+      - foundation_predictions
+      - llm_scores
+      - portfolio_state
+
+  # Action space
+  action:
+    type: continuous  # Portfolio weights
+    bounds: [-1.0, 1.0]  # Allow shorting
+    normalization: softmax  # Ensure sum = 1
+
+  # Reward function
+  reward:
+    type: multi_objective
+    components:
+      - name: return
+        weight: 0.4
+      - name: sharpe
+        weight: 0.3
+      - name: drawdown
+        weight: 0.2
+        invert: true
+      - name: turnover
+        weight: 0.1
+        invert: true
+
+    # Risk-adjusted reward
+    cvar_lambda: 2.0
+    cvar_quantile: 0.05
+
+# =============================================================================
+# Environment Configuration
+# =============================================================================
+environment:
+  initial_balance: 100000
+  commission_bps: 0.5
+  slippage_bps: 2.0
+  funding_rate_bps: 1.0  # Daily for shorts
+
+  # Risk controls
+  max_drawdown_pct: 25.0
+  max_position_size: 0.3
+  max_sector_exposure: 0.5
+  max_leverage: 1.0
+
+  # Turbulence threshold
+  turbulence:
+    enabled: true
+    threshold: 100
+    window: 30
+    pause_trading: true
+
+  # Circuit breakers
+  circuit_breakers:
+    - type: drawdown
+      threshold: 15.0
+      action: reduce_positions
+      reduction: 0.5
+    - type: drawdown
+      threshold: 25.0
+      action: stop_trading
+
+# =============================================================================
+# RLAIF Configuration
+# =============================================================================
+rlaif:
+  enabled: true
+
+  # Feedback collection
+  feedback:
+    source: market_outcomes  # Options: market_outcomes, human, hybrid
+    metrics:
+      - return
+      - sharpe
+      - hit_rate
+      - drawdown
+    aggregation_window: 20  # trades
+
+  # Preference generation
+  preferences:
+    pairs_per_iteration: 1000
+    comparison_method: pairwise  # Options: pairwise, ranking
+    outcome_weight: 0.7  # Weight of outcome vs process
+    diversity_sampling: true
+
+  # Reward model
+  reward_model:
+    architecture: transformer
+    hidden_dim: 768
+    num_layers: 6
+    learning_rate: 1e-5
+    batch_size: 32
+    epochs: 10
+
+  # Fine-tuning (if self-hosting LLM)
+  fine_tuning:
+    method: ppo  # Options: ppo, dpo, direct_rlaif
+    learning_rate: 1e-6
+    batch_size: 16
+    ppo_epochs: 4
+    clip_range: 0.2
+    target_kl: 0.01
+
+  # Iterations
+  iterations: 5
+  episodes_per_iteration: 100
+
+# =============================================================================
+# Backtesting Configuration
+# =============================================================================
+backtesting:
+  # Walk-forward analysis
+  walk_forward:
+    enabled: true
+    train_window_months: 24
+    test_window_months: 6
+    step_months: 6
+    min_train_samples: 10000
+
+  # Purged cross-validation
+  purged_cv:
+    enabled: true
+    purge_buffer_days: 30
+    embargo_days: 7
+
+  # Transaction costs
+  costs:
+    commission_bps: 0.5
+    slippage_bps: 2.0
+    market_impact:
+      enabled: true
+      model: square_root  # Almgren-Chriss
+      impact_factor: 0.1
+    funding_rate_bps: 1.0
+
+  # Metrics
+  metrics:
+    - return
+    - sharpe
+    - sortino
+    - max_drawdown
+    - calmar
+    - profit_factor
+    - hit_rate
+    - average_win
+    - average_loss
+    - win_loss_ratio
+    - cvar_95
+
+  # Bias prevention
+  bias_checks:
+    lookahead:
+      enabled: true
+      strict_timestamps: true
+      reporting_lag_days: 60
+    survivorship:
+      enabled: true
+      include_delisted: true
+    data_snooping:
+      enabled: true
+      bonferroni_correction: true
+
+# =============================================================================
+# Deployment Configuration
+# =============================================================================
+deployment:
+  # API
+  api:
+    host: 0.0.0.0
+    port: 8000
+    workers: 4
+    reload: false
+    log_level: info
+
+  # Authentication
+  auth:
+    enabled: true
+    jwt_secret_key: ${SECRET_KEY}
+    jwt_algorithm: HS256
+    access_token_expire_minutes: 30
+
+  # Rate limiting
+  rate_limit:
+    enabled: true
+    requests_per_minute: 100
+    burst_size: 20
+
+  # Docker
+  docker:
+    base_image: nvidia/cuda:12.1-runtime-ubuntu22.04
+    python_version: "3.11"
+    target_size_gb: 5
+
+  # RunPod
+  runpod:
+    gpu_type: T4  # Options: T4, A100, H100
+    min_workers: 2
+    max_workers: 5
+    autoscaling:
+      enabled: true
+      metric: gpu_utilization
+      target: 70
+    cold_start_optimization: true
+
+# =============================================================================
+# Monitoring Configuration
+# =============================================================================
+monitoring:
+  # Logging
+  logging:
+    level: INFO
+    format: json
+    handlers:
+      - console
+      - file
+    rotation:
+      max_bytes: 10485760  # 10MB
+      backup_count: 10
+
+  # Metrics
+  metrics:
+    enabled: true
+    export_interval_seconds: 60
+    prometheus:
+      enabled: true
+      port: 8001
+
+  # Model monitoring
+  model:
+    # Performance tracking
+    performance:
+      enabled: true
+      metrics:
+        - accuracy
+        - sharpe
+        - drawdown
+        - hit_rate
+      alert_thresholds:
+        sharpe_below: 1.0
+        drawdown_above: 20.0
+
+    # Drift detection
+    drift:
+      enabled: true
+      method: ks_test  # Options: ks_test, psi, js_divergence
+      p_value_threshold: 0.05
+      check_frequency_hours: 24
+      features:
+        - all  # or list specific features
+
+    # Data quality
+    data_quality:
+      enabled: true
+      checks:
+        - missing_values
+        - type_mismatches
+        - cardinality_shifts
+        - range_violations
+      alert_on_failure: true
+
+  # Explainability
+  explainability:
+    enabled: true
+    method: shap  # Options: shap, lime
+    background_samples: 100
+    compute_frequency: daily
+
+  # Dashboards
+  dashboards:
+    grafana:
+      enabled: true
+      host: localhost
+      port: 3000
+      dashboards:
+        - trading_performance
+        - model_metrics
+        - system_health
+        - risk_dashboard
+
+  # Alerting
+  alerts:
+    enabled: true
+    channels:
+      email:
+        enabled: false
+        recipients: []
+      slack:
+        enabled: false
+        webhook_url: ${SLACK_WEBHOOK_URL}
+      pagerduty:
+        enabled: false
+        api_key: ${PAGERDUTY_API_KEY}
+
+    rules:
+      - name: Performance Degradation
+        condition: sharpe < 1.0
+        severity: warning
+      - name: High Drawdown
+        condition: drawdown > 20.0
+        severity: critical
+      - name: Data Drift Detected
+        condition: drift_p_value < 0.05
+        severity: warning
+      - name: System Error Rate High
+        condition: error_rate > 0.01
+        severity: critical
+
+# =============================================================================
+# Experiment Tracking
+# =============================================================================
+experiment_tracking:
+  # MLflow
+  mlflow:
+    enabled: true
+    tracking_uri: http://localhost:5000
+    experiment_name: rlaif-trading
+    artifact_location: ./mlruns
+
+  # Weights & Biases
+  wandb:
+    enabled: false
+    project: rlaif-trading
+    entity: ${WANDB_ENTITY}
+    mode: online  # online, offline, disabled
+
+  # What to track
+  tracking:
+    hyperparameters: true
+    metrics: true
+    artifacts: true
+    models: true
+    code: true
+
+# =============================================================================
+# Compliance & Audit
+# =============================================================================
+compliance:
+  # Audit logging
+  audit:
+    enabled: true
+    log_dir: ./logs/audit
+    log_predictions: true
+    log_decisions: true
+    log_outcomes: true
+    retention_days: 2555  # 7 years
+
+  # Model cards
+  model_cards:
+    enabled: true
+    auto_generate: true
+    include:
+      - model_details
+      - intended_use
+      - training_data
+      - evaluation_results
+      - ethical_considerations
+      - limitations
+
+  # Regulatory
+  regulatory:
+    frameworks:
+      - fed_sr_11_7
+      - eu_ai_act
+      - dora
+    documentation: auto
+
+# =============================================================================
+# Development
+# =============================================================================
+development:
+  debug: false
+  profile: false
+  test_mode: false
+  mock_external_apis: false
+  deterministic: true
+  seed: 42

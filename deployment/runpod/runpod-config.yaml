@@ -1,0 +1,154 @@
+# RunPod Serverless Configuration
+# See: https://docs.runpod.io/serverless/overview
+
+name: rlaif-trading-serverless
+
+# Docker image (will be built and pushed)
+# Replace with your Docker Hub or registry URL
+image: <your-dockerhub-username>/rlaif-trading:latest
+
+# GPU Configuration
+gpu:
+  # GPU types to use (in order of preference)
+  # Options: T4, A4000, A4500, A5000, A6000, A100-40GB, A100-80GB, H100
+  types:
+    - T4  # Cost-effective for inference ($0.40/hr)
+    - A100  # High performance ($2.09/hr)
+
+  # Minimum VRAM required (GB)
+  min_vram: 8
+
+  # Whether to use Tensor Cores
+  use_tensor_cores: true
+
+# Scaling Configuration
+scaling:
+  # Minimum workers (0 for pure serverless, >0 for warm pool)
+  min_workers: 0
+
+  # Maximum workers
+  max_workers: 5
+
+  # Idle timeout (seconds) - how long to keep workers alive
+  idle_timeout: 60
+
+  # Scale up threshold (GPU utilization %)
+  scale_up_threshold: 70
+
+  # Scale down threshold
+  scale_down_threshold: 30
+
+# Container Configuration
+container:
+  # Environment variables
+  env:
+    LOG_LEVEL: INFO
+    APP_ENV: production
+    PYTHONUNBUFFERED: "1"
+
+  # Resource limits
+  resources:
+    cpu: 4
+    memory: 16  # GB
+    disk: 20  # GB
+
+  # Startup command (optional, uses Dockerfile CMD if not specified)
+  # command: ["python3.11", "-u", "deployment/runpod/handler.py"]
+
+# Network Configuration
+network:
+  # Expose ports (for debugging, not required for serverless)
+  ports:
+    - 8000
+
+  # Enable FlashBoot for faster cold starts
+  flashboot: true
+
+# Timeouts
+timeouts:
+  # Request timeout (seconds)
+  request: 300
+
+  # Cold start timeout (seconds)
+  cold_start: 60
+
+# Logging
+logging:
+  level: INFO
+  format: json
+
+# Cost Optimization
+cost_optimization:
+  # Use spot instances (cheaper but can be interrupted)
+  use_spot: false
+
+  # Prefer cheaper regions
+  prefer_cheaper_regions: true
+
+  # Regions (in order of preference)
+  regions:
+    - US-CA  # California
+    - US-OR  # Oregon
+    - EU-RO  # Romania
+
+# Monitoring & Alerts
+monitoring:
+  # Enable metrics collection
+  enabled: true
+
+  # Alert on errors
+  alert_on_errors: true
+
+  # Alert threshold (errors per minute)
+  error_threshold: 5
+
+# Health Checks
+health_check:
+  # Health check endpoint
+  endpoint: /health
+
+  # Interval (seconds)
+  interval: 30
+
+  # Timeout (seconds)
+  timeout: 10
+
+  # Unhealthy threshold (consecutive failures)
+  unhealthy_threshold: 3
+
+# Template Example Jobs (for testing)
+test_jobs:
+  - name: health_check
+    input:
+      action: health
+
+  - name: sentiment_analysis
+    input:
+      action: sentiment
+      texts:
+        - "Strong quarterly earnings beat analyst expectations"
+        - "Company faces regulatory challenges"
+      aggregate: true
+
+  - name: prediction
+    input:
+      action: predict
+      symbol: AAPL
+      time_series: [150.0, 151.5, 149.8, 152.3, 153.1]
+      horizon: 10
+      return_uncertainty: true
+
+  - name: technical_indicators
+    input:
+      action: indicators
+      ohlcv:
+        open: [100, 101, 102, 103, 104]
+        high: [102, 103, 104, 105, 106]
+        low: [99, 100, 101, 102, 103]
+        close: [101, 102, 103, 104, 105]
+        volume: [1000000, 1100000, 1200000, 1300000, 1400000]
+
+# Notes:
+# - Image must be pushed to a public or authenticated registry
+# - Environment variables can be set in RunPod dashboard
+# - API keys should be set as secrets, not in this config

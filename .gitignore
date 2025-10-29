@@ -1,0 +1,123 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Data
+historical_data/*.csv
+historical_data/*.parquet
+data_cache/
+*.db
+*.sqlite
+
+# Logs
+logs/
+*.log
+
+# Models & Checkpoints
+models/checkpoints/*.pt
+models/checkpoints/*.pth
+models/checkpoints/*.ckpt
+*.h5
+*.pkl
+*.joblib
+
+# Experiment tracking
+mlruns/
+wandb/
+.mlflow/
+
+# Feast feature store
+feast_repo/data/
+feast_repo/registry.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Documentation
+docs/_build/
+site/
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# Profiling
+*.prof
+*.lprof
+
+# Backup files
+*.bak
+*.tmp
+
+# Docker
+*.tar
+*.tar.gz
+
+# Secrets (double-check these never get committed!)
+*secret*
+*key.json
+credentials.json
+*.pem
+*.key
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Compiled files
+*.pyc
+*.pyo
+
+# Large files
+*.zip
+*.gz
+*.bz2
+
+# API responses cache
+.cache/
+
+# Temporary files
+tmp/
+temp/
