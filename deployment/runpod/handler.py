@@ -16,7 +16,7 @@ import json
 import os
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import numpy as np
 import runpod
@@ -522,6 +522,248 @@ def health_handler(job: Dict[str, Any], request_id: str) -> Dict[str, Any]:
 
 
 # ===============================================================================
+# Unified Analysis Handler
+# ===============================================================================
+
+
+def _fetch_news_for_symbol(symbol: str) -> List[str]:
+    """Fetch news for a symbol (placeholder - implement with Finnhub/Polygon)"""
+    # TODO: Implement news fetching with Finnhub/Polygon API
+    # For now, return empty list
+    return []
+
+
+def _generate_summary(result: Dict[str, Any]) -> str:
+    """Generate human-readable summary"""
+    symbol = result.get("symbol", "Unknown")
+    summary_parts = [f"Analysis for {symbol}:"]
+    
+    if "prediction" in result and "error" not in result["prediction"]:
+        pred = result["prediction"]
+        if "predictions" in pred and len(pred["predictions"]) > 0:
+            last_price = pred["predictions"][-1] if pred["predictions"] else None
+            if last_price:
+                summary_parts.append(f"Predicted price: ${last_price:.2f}")
+    
+    if "recommendation" in result and "error" not in result["recommendation"]:
+        rec = result["recommendation"]
+        if "signal" in rec:
+            confidence = rec.get("confidence", 0) * 100
+            summary_parts.append(f"Recommendation: {rec['signal']} (confidence: {confidence:.0f}%)")
+    
+    return " ".join(summary_parts)
+
+
+def analyze_handler(job: Dict[str, Any], request_id: str) -> Dict[str, Any]:
+    """
+    Unified analysis endpoint - analyzes a ticker completely.
+    
+    Expected input:
+    {
+        "input": {
+            "action": "analyze",
+            "symbol": "AAPL",
+            "horizon": 30,
+            "period": "1y",  # Optional, default 1y
+            "include_sentiment": true,  # Optional
+            "include_indicators": true,  # Optional
+            "include_prediction": true  # Optional
+        }
+    }
+    """
+    try:
+        clear_gpu_cache()
+        
+        input_data = job.get("input", {})
+        symbol = input_data.get("symbol", "").upper().strip()
+        horizon = input_data.get("horizon", 30)
+        period = input_data.get("period", "1y")
+        include_sentiment = input_data.get("include_sentiment", True)
+        include_indicators = input_data.get("include_indicators", True)
+        include_prediction = input_data.get("include_prediction", True)
+        
+        if not symbol:
+            raise ValueError("symbol is required")
+        
+        logger.info(f"[{request_id}] Analyzing {symbol} (horizon={horizon}, period={period})")
+        
+        # Fetch data automatically
+        try:
+            import pandas as pd
+            
+            # Try Alpaca first, fallback to yfinance
+            df = None
+            try:
+                from src.data.ingestion.market_data import AlpacaDataClient
+                from dotenv import load_dotenv
+                
+                load_dotenv()
+                data_client = AlpacaDataClient()
+                
+                # Convert period to days
+                days_map = {"1y": 365, "6mo": 180, "3mo": 90, "1mo": 30}
+                days = days_map.get(period, 365)
+                
+                df = data_client.download_latest(
+                    symbols=symbol,
+                    days=days,
+                    timeframe="1Day"
+                )
+                
+                # Convert multi-index to single index if needed
+                if isinstance(df.index, pd.MultiIndex):
+                    df = df.loc[symbol].reset_index()
+                    df = df.set_index("timestamp")
+                else:
+                    df = df.reset_index()
+                    if "timestamp" in df.columns:
+                        df = df.set_index("timestamp")
+                        
+            except Exception as e:
+                logger.warning(f"[{request_id}] Alpaca failed, using yfinance: {e}")
+                try:
+                    import yfinance as yf
+                    ticker = yf.Ticker(symbol)
+                    df = ticker.history(period=period)
+                    df.index.name = "timestamp"
+                    # Rename columns to lowercase
+                    df.columns = df.columns.str.lower()
+                except Exception as yf_error:
+                    logger.error(f"[{request_id}] yfinance also failed: {yf_error}")
+                    raise ValueError(f"Could not fetch data for {symbol}: {str(yf_error)}")
+                    
+        except Exception as e:
+            logger.error(f"[{request_id}] Data fetching failed: {e}")
+            raise ValueError(f"Could not fetch data for {symbol}: {e}")
+        
+        if df is None or df.empty:
+            raise ValueError(f"No data found for {symbol}")
+        
+        result = {
+            "symbol": symbol,
+            "timestamp": time.time(),
+            "data_period": {
+                "start": str(df.index.min()),
+                "end": str(df.index.max()),
+                "days": len(df)
+            }
+        }
+        
+        # Prediction
+        if include_prediction:
+            try:
+                # Get close prices
+                close_col = "close" if "close" in df.columns else df.columns[0]
+                prices = df[close_col].values.tolist()
+                
+                if len(prices) < MIN_TIME_SERIES_LENGTH:
+                    logger.warning(f"[{request_id}] Not enough data for prediction: {len(prices)} < {MIN_TIME_SERIES_LENGTH}")
+                    result["prediction"] = {"error": f"Not enough data: {len(prices)} < {MIN_TIME_SERIES_LENGTH}"}
+                else:
+                    pred_result = predict_handler({
+                        "input": {
+                            "symbol": symbol,
+                            "time_series": prices,
+                            "horizon": horizon,
+                            "return_uncertainty": True
+                        }
+                    }, request_id)
+                    
+                    if pred_result.get("status") == "success":
+                        result["prediction"] = pred_result["output"]
+                    else:
+                        result["prediction"] = {"error": pred_result.get("error", "Unknown error")}
+            except Exception as e:
+                logger.warning(f"[{request_id}] Prediction failed: {e}")
+                result["prediction"] = {"error": str(e)}
+        
+        # Indicators
+        if include_indicators:
+            try:
+                # Ensure we have OHLCV columns
+                ohlcv_cols = {"open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"}
+                ohlcv_data = {}
+                
+                for key, col_name in ohlcv_cols.items():
+                    if col_name in df.columns:
+                        ohlcv_data[key] = df[col_name].values.tolist()
+                    else:
+                        # Fallback: use close price for missing columns
+                        logger.warning(f"[{request_id}] Missing {col_name} column, using close price")
+                        close_col = "close" if "close" in df.columns else df.columns[0]
+                        ohlcv_data[key] = df[close_col].values.tolist()
+                
+                if len(ohlcv_data["close"]) == 0:
+                    raise ValueError("No OHLCV data available")
+                
+                indicators_result = indicators_handler({
+                    "input": {
+                        "action": "indicators",
+                        "ohlcv": ohlcv_data
+                    }
+                }, request_id)
+                
+                if indicators_result.get("status") == "success":
+                    result["indicators"] = indicators_result["output"]
+                else:
+                    result["indicators"] = {"error": indicators_result.get("error", "Unknown error")}
+            except Exception as e:
+                logger.warning(f"[{request_id}] Indicators failed: {e}")
+                result["indicators"] = {"error": str(e)}
+        
+        # Sentiment (requires news fetching - optional)
+        if include_sentiment:
+            try:
+                # Try to fetch news
+                news_texts = _fetch_news_for_symbol(symbol)
+                if news_texts:
+                    sentiment_result = sentiment_handler({
+                        "input": {
+                            "action": "sentiment",
+                            "texts": news_texts,
+                            "aggregate": True
+                        }
+                    }, request_id)
+                    
+                    if sentiment_result.get("status") == "success":
+                        result["sentiment"] = sentiment_result["output"]
+                    else:
+                        result["sentiment"] = {"error": sentiment_result.get("error", "Unknown error")}
+                else:
+                    result["sentiment"] = {"note": "No news data available (news fetching not implemented)"}
+            except Exception as e:
+                logger.warning(f"[{request_id}] Sentiment failed: {e}")
+                result["sentiment"] = {"error": str(e)}
+        
+        # Generate recommendation
+        try:
+            from src.analysis.recommendation import generate_recommendation
+            recommendation = generate_recommendation(result)
+            result["recommendation"] = recommendation
+        except Exception as e:
+            logger.warning(f"[{request_id}] Recommendation generation failed: {e}")
+            result["recommendation"] = {"error": str(e)}
+        
+        # Generate summary
+        result["summary"] = _generate_summary(result)
+        
+        return {
+            "status": "success",
+            "output": result,
+            "request_id": request_id
+        }
+        
+    except ValueError as e:
+        logger.warning(f"[{request_id}] Validation error: {e}")
+        return {"status": "error", "error": str(e), "request_id": request_id, "error_type": "validation"}
+    except Exception as e:
+        logger.error(f"[{request_id}] Analysis error: {e}", exc_info=True)
+        return {"status": "error", "error": str(e), "request_id": request_id, "error_type": "runtime"}
+    finally:
+        clear_gpu_cache()
+
+
+# ===============================================================================
 # Main Handler (routes to specific handlers)
 # ===============================================================================
 
@@ -533,6 +775,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     Routes requests to appropriate sub-handlers based on 'action' field.
     
     Supported actions:
+    - analyze: Unified ticker analysis (NEW - recommended)
     - predict: Stock price prediction
     - sentiment: Sentiment analysis
     - indicators: Technical indicators
@@ -541,7 +784,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     Input format:
     {
         "input": {
-            "action": "predict|sentiment|indicators|health",
+            "action": "analyze|predict|sentiment|indicators|health",
             ... (action-specific parameters)
         }
     }
@@ -562,7 +805,9 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"[{request_id}] Received request: action={action}")
 
         # Route to appropriate handler
-        if action == "predict":
+        if action == "analyze":
+            return analyze_handler(job, request_id)
+        elif action == "predict":
             return predict_handler(job, request_id)
         elif action == "sentiment":
             return sentiment_handler(job, request_id)
@@ -574,7 +819,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             return {
                 "status": "error",
                 "error": f"Unknown action: {action}",
-                "supported_actions": ["predict", "sentiment", "indicators", "health"],
+                "supported_actions": ["analyze", "predict", "sentiment", "indicators", "health"],
                 "request_id": request_id,
                 "error_type": "invalid_action",
             }
