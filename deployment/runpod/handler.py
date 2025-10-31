@@ -3,53 +3,259 @@ RunPod Serverless Handler for RLAIF Trading Pipeline
 
 This handler wraps the FastAPI application for RunPod's serverless architecture.
 Supports both HTTP and job-based invocations.
+
+Improvements:
+- Proper error handling and graceful degradation
+- Input validation and size limits
+- GPU memory management
+- Request tracing with unique IDs
+- Better health checks
 """
-
-import sys
-from pathlib import Path
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import json
 import os
 import time
-from typing import Any, Dict
+import uuid
+from typing import Any, Dict, Optional
 
 import numpy as np
 import runpod
+import torch
 
 from src.features import TechnicalFeatureEngine, SentimentAnalyzer
 from src.utils import setup_logging
 
-# Setup logging
+# ===============================================================================
+# Configuration Constants
+# ===============================================================================
+
+# Input validation limits
+MAX_TIME_SERIES_LENGTH = 10000
+MIN_TIME_SERIES_LENGTH = 30
+MAX_TEXTS = 100
+MAX_TEXT_LENGTH = 10000
+MAX_HORIZON = 365
+MIN_HORIZON = 1
+MAX_OHLCV_LENGTH = 10000
+
+# Request timeout (seconds)
+REQUEST_TIMEOUT = 300  # 5 minutes, matches RunPod default
+
+# ===============================================================================
+# Setup Logging
+# ===============================================================================
+
 logger = setup_logging(log_level=os.getenv("LOG_LEVEL", "INFO"))
 
 # ===============================================================================
 # Model Initialization (runs once on cold start)
 # ===============================================================================
 
-logger.info("Initializing models...")
+sentiment_analyzer: Optional[SentimentAnalyzer] = None
+technical_engine: Optional[TechnicalFeatureEngine] = None
+models_initialized = False
 
-# Initialize models
+
+def initialize_models():
+    """
+    Initialize models with proper error handling and graceful degradation.
+    
+    This function can be called multiple times safely - it will only
+    initialize once.
+    """
+    global sentiment_analyzer, technical_engine, models_initialized
+
+    if models_initialized:
+        return
+
+    logger.info("Initializing models...")
+
+    # Initialize sentiment analyzer
+    try:
+        sentiment_analyzer = SentimentAnalyzer(
+            model_name="yiyanghkust/finbert-tone",
+            batch_size=32,
+        )
+        logger.info("? FinBERT loaded successfully")
+    except Exception as e:
+        logger.error(f"? Could not load FinBERT: {e}", exc_info=True)
+        sentiment_analyzer = None
+        # Don't raise - allow graceful degradation
+
+    # Initialize technical engine
+    try:
+        technical_engine = TechnicalFeatureEngine()
+        logger.info("? Technical engine loaded successfully")
+    except Exception as e:
+        logger.error(f"? Could not load technical engine: {e}", exc_info=True)
+        technical_engine = None
+        # Don't raise - allow graceful degradation
+
+    models_initialized = True
+    logger.info(f"Model initialization complete. Sentiment: {sentiment_analyzer is not None}, Technical: {technical_engine is not None}")
+
+
+def clear_gpu_cache():
+    """Clear GPU cache to prevent memory leaks"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+# Initialize models on module load
 try:
-    sentiment_analyzer = SentimentAnalyzer(
-        model_name="yiyanghkust/finbert-tone",
-        batch_size=32,
-    )
-    logger.info("FinBERT loaded successfully")
+    initialize_models()
 except Exception as e:
-    logger.warning(f"Could not load FinBERT: {e}")
-    sentiment_analyzer = None
+    logger.critical(f"Critical error during model initialization: {e}", exc_info=True)
+    # Continue anyway - handlers will fail gracefully
 
-try:
-    technical_engine = TechnicalFeatureEngine()
-    logger.info("Technical engine loaded successfully")
-except Exception as e:
-    logger.warning(f"Could not load technical engine: {e}")
-    technical_engine = None
 
-logger.info("Model initialization complete")
+# ===============================================================================
+# Input Validation Functions
+# ===============================================================================
+
+
+def validate_prediction_input(input_data: Dict[str, Any]) -> tuple[str, np.ndarray, int, bool]:
+    """
+    Validate and extract prediction input parameters.
+    
+    Returns:
+        tuple: (symbol, time_series, horizon, return_uncertainty)
+    
+    Raises:
+        ValueError: If validation fails
+    """
+    # Validate symbol
+    symbol = input_data.get("symbol", "UNKNOWN")
+    if not isinstance(symbol, str) or len(symbol) == 0:
+        raise ValueError("Invalid symbol: must be a non-empty string")
+
+    # Validate time_series
+    if "time_series" not in input_data:
+        raise ValueError("Missing required field: time_series")
+
+    time_series = input_data["time_series"]
+    if not isinstance(time_series, list):
+        raise ValueError("time_series must be a list")
+
+    if len(time_series) < MIN_TIME_SERIES_LENGTH:
+        raise ValueError(f"time_series too short (min {MIN_TIME_SERIES_LENGTH}, got {len(time_series)})")
+
+    if len(time_series) > MAX_TIME_SERIES_LENGTH:
+        raise ValueError(f"time_series too long (max {MAX_TIME_SERIES_LENGTH}, got {len(time_series)})")
+
+    try:
+        time_series_array = np.array(time_series, dtype=np.float64)
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"time_series contains invalid values: {e}")
+
+    if np.any(np.isnan(time_series_array)) or np.any(np.isinf(time_series_array)):
+        raise ValueError("time_series contains NaN or Inf values")
+
+    # Validate horizon
+    horizon = input_data.get("horizon", 30)
+    if not isinstance(horizon, int):
+        raise ValueError("horizon must be an integer")
+    if horizon < MIN_HORIZON or horizon > MAX_HORIZON:
+        raise ValueError(f"horizon out of range ({MIN_HORIZON}-{MAX_HORIZON}, got {horizon})")
+
+    # Validate return_uncertainty
+    return_uncertainty = input_data.get("return_uncertainty", True)
+    if not isinstance(return_uncertainty, bool):
+        return_uncertainty = bool(return_uncertainty)
+
+    return symbol, time_series_array, horizon, return_uncertainty
+
+
+def validate_sentiment_input(input_data: Dict[str, Any]) -> tuple[list[str], bool]:
+    """
+    Validate and extract sentiment analysis input parameters.
+    
+    Returns:
+        tuple: (texts, aggregate)
+    
+    Raises:
+        ValueError: If validation fails
+    """
+    if "texts" not in input_data:
+        raise ValueError("Missing required field: texts")
+
+    texts = input_data["texts"]
+    if not isinstance(texts, list):
+        raise ValueError("texts must be a list")
+
+    if len(texts) == 0:
+        raise ValueError("texts list cannot be empty")
+
+    if len(texts) > MAX_TEXTS:
+        raise ValueError(f"Too many texts (max {MAX_TEXTS}, got {len(texts)})")
+
+    # Validate each text
+    validated_texts = []
+    for i, text in enumerate(texts):
+        if not isinstance(text, str):
+            raise ValueError(f"text[{i}] must be a string")
+        if len(text) == 0:
+            raise ValueError(f"text[{i}] cannot be empty")
+        if len(text) > MAX_TEXT_LENGTH:
+            raise ValueError(f"text[{i}] too long (max {MAX_TEXT_LENGTH} chars)")
+        validated_texts.append(text)
+
+    aggregate = input_data.get("aggregate", True)
+    if not isinstance(aggregate, bool):
+        aggregate = bool(aggregate)
+
+    return validated_texts, aggregate
+
+
+def validate_indicators_input(input_data: Dict[str, Any]) -> Dict[str, list[float]]:
+    """
+    Validate and extract technical indicators input parameters.
+    
+    Returns:
+        dict: OHLCV data
+    
+    Raises:
+        ValueError: If validation fails
+    """
+    if "ohlcv" not in input_data:
+        raise ValueError("Missing required field: ohlcv")
+
+    ohlcv = input_data["ohlcv"]
+    if not isinstance(ohlcv, dict):
+        raise ValueError("ohlcv must be a dictionary")
+
+    required_keys = ["open", "high", "low", "close", "volume"]
+    for key in required_keys:
+        if key not in ohlcv:
+            raise ValueError(f"Missing required OHLCV key: {key}")
+
+    # Validate lengths and convert to lists
+    validated_ohlcv = {}
+    lengths = []
+    for key in required_keys:
+        values = ohlcv[key]
+        if not isinstance(values, list):
+            raise ValueError(f"ohlcv['{key}'] must be a list")
+        if len(values) == 0:
+            raise ValueError(f"ohlcv['{key}'] cannot be empty")
+        if len(values) > MAX_OHLCV_LENGTH:
+            raise ValueError(f"ohlcv['{key}'] too long (max {MAX_OHLCV_LENGTH})")
+        
+        # Validate numeric values
+        try:
+            validated_values = [float(v) for v in values]
+            if any(np.isnan(v) or np.isinf(v) for v in validated_values):
+                raise ValueError(f"ohlcv['{key}'] contains NaN or Inf values")
+            validated_ohlcv[key] = validated_values
+            lengths.append(len(validated_values))
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"ohlcv['{key}'] contains invalid values: {e}")
+
+    # All arrays must have the same length
+    if len(set(lengths)) != 1:
+        raise ValueError(f"OHLCV arrays have different lengths: {lengths}")
+
+    return validated_ohlcv
 
 
 # ===============================================================================
@@ -57,10 +263,10 @@ logger.info("Model initialization complete")
 # ===============================================================================
 
 
-def predict_handler(job: Dict[str, Any]) -> Dict[str, Any]:
+def predict_handler(job: Dict[str, Any], request_id: str) -> Dict[str, Any]:
     """
-    Handle prediction requests
-
+    Handle prediction requests with input validation and error handling.
+    
     Expected input:
     {
         "input": {
@@ -73,20 +279,19 @@ def predict_handler(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     """
     try:
-        input_data = job["input"]
-        symbol = input_data.get("symbol", "UNKNOWN")
-        time_series = np.array(input_data["time_series"])
-        horizon = input_data.get("horizon", 30)
-        return_uncertainty = input_data.get("return_uncertainty", True)
+        clear_gpu_cache()  # Clear cache before processing
 
-        logger.info(f"Prediction request for {symbol}, horizon={horizon}")
+        input_data = job.get("input", {})
+        symbol, time_series, horizon, return_uncertainty = validate_prediction_input(input_data)
+
+        logger.info(f"[{request_id}] Prediction request: symbol={symbol}, horizon={horizon}, series_length={len(time_series)}")
 
         # Simple MA-based prediction (placeholder for foundation model)
         window = min(30, len(time_series))
         ma = np.mean(time_series[-window:])
         trend = (time_series[-1] - time_series[-window]) / window
 
-        predictions = [ma + trend * i for i in range(1, horizon + 1)]
+        predictions = [float(ma + trend * i) for i in range(1, horizon + 1)]
 
         result = {
             "symbol": symbol,
@@ -96,20 +301,25 @@ def predict_handler(job: Dict[str, Any]) -> Dict[str, Any]:
         }
 
         if return_uncertainty:
-            uncertainty = [abs(trend) * i * 0.1 for i in range(1, horizon + 1)]
+            uncertainty = [float(abs(trend) * i * 0.1) for i in range(1, horizon + 1)]
             result["uncertainty"] = uncertainty
 
-        return {"status": "success", "output": result}
+        return {"status": "success", "output": result, "request_id": request_id}
 
+    except ValueError as e:
+        logger.warning(f"[{request_id}] Validation error: {e}")
+        return {"status": "error", "error": str(e), "request_id": request_id, "error_type": "validation"}
     except Exception as e:
-        logger.error(f"Prediction error: {e}")
-        return {"status": "error", "error": str(e)}
+        logger.error(f"[{request_id}] Prediction error: {e}", exc_info=True)
+        return {"status": "error", "error": str(e), "request_id": request_id, "error_type": "runtime"}
+    finally:
+        clear_gpu_cache()  # Clear cache after processing
 
 
-def sentiment_handler(job: Dict[str, Any]) -> Dict[str, Any]:
+def sentiment_handler(job: Dict[str, Any], request_id: str) -> Dict[str, Any]:
     """
-    Handle sentiment analysis requests
-
+    Handle sentiment analysis requests with input validation.
+    
     Expected input:
     {
         "input": {
@@ -120,17 +330,20 @@ def sentiment_handler(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     """
     try:
+        clear_gpu_cache()  # Clear cache before processing
+
         if sentiment_analyzer is None:
             return {
                 "status": "error",
-                "error": "Sentiment analyzer not loaded",
+                "error": "Sentiment analyzer not available (failed to load during initialization)",
+                "request_id": request_id,
+                "error_type": "service_unavailable",
             }
 
-        input_data = job["input"]
-        texts = input_data["texts"]
-        aggregate = input_data.get("aggregate", True)
+        input_data = job.get("input", {})
+        texts, aggregate = validate_sentiment_input(input_data)
 
-        logger.info(f"Sentiment analysis for {len(texts)} texts")
+        logger.info(f"[{request_id}] Sentiment analysis: {len(texts)} texts, aggregate={aggregate}")
 
         # Analyze
         results = sentiment_analyzer.analyze(texts)
@@ -147,17 +360,23 @@ def sentiment_handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 "aggregated": aggregated,
                 "timestamp": time.time(),
             },
+            "request_id": request_id,
         }
 
+    except ValueError as e:
+        logger.warning(f"[{request_id}] Validation error: {e}")
+        return {"status": "error", "error": str(e), "request_id": request_id, "error_type": "validation"}
     except Exception as e:
-        logger.error(f"Sentiment analysis error: {e}")
-        return {"status": "error", "error": str(e)}
+        logger.error(f"[{request_id}] Sentiment analysis error: {e}", exc_info=True)
+        return {"status": "error", "error": str(e), "request_id": request_id, "error_type": "runtime"}
+    finally:
+        clear_gpu_cache()  # Clear cache after processing
 
 
-def indicators_handler(job: Dict[str, Any]) -> Dict[str, Any]:
+def indicators_handler(job: Dict[str, Any], request_id: str) -> Dict[str, Any]:
     """
-    Handle technical indicators computation
-
+    Handle technical indicators computation with input validation.
+    
     Expected input:
     {
         "input": {
@@ -173,16 +392,20 @@ def indicators_handler(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     """
     try:
+        clear_gpu_cache()  # Clear cache before processing
+
         if technical_engine is None:
             return {
                 "status": "error",
-                "error": "Technical engine not loaded",
+                "error": "Technical engine not available (failed to load during initialization)",
+                "request_id": request_id,
+                "error_type": "service_unavailable",
             }
 
-        input_data = job["input"]
-        ohlcv = input_data["ohlcv"]
+        input_data = job.get("input", {})
+        ohlcv = validate_indicators_input(input_data)
 
-        logger.info("Computing technical indicators")
+        logger.info(f"[{request_id}] Computing technical indicators: {len(ohlcv['close'])} data points")
 
         # Convert to DataFrame
         import pandas as pd
@@ -196,8 +419,9 @@ def indicators_handler(job: Dict[str, Any]) -> Dict[str, Any]:
         indicators = {}
         for col in df_with_indicators.columns:
             if col not in ["open", "high", "low", "close", "volume"]:
+                # Convert to list, handling NaN
                 values = df_with_indicators[col].fillna(0).tolist()
-                indicators[col] = values
+                indicators[col] = [float(v) for v in values]
 
         return {
             "status": "success",
@@ -205,29 +429,96 @@ def indicators_handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 "indicators": indicators,
                 "timestamp": time.time(),
             },
+            "request_id": request_id,
         }
 
+    except ValueError as e:
+        logger.warning(f"[{request_id}] Validation error: {e}")
+        return {"status": "error", "error": str(e), "request_id": request_id, "error_type": "validation"}
     except Exception as e:
-        logger.error(f"Technical indicators error: {e}")
-        return {"status": "error", "error": str(e)}
+        logger.error(f"[{request_id}] Technical indicators error: {e}", exc_info=True)
+        return {"status": "error", "error": str(e), "request_id": request_id, "error_type": "runtime"}
+    finally:
+        clear_gpu_cache()  # Clear cache after processing
 
 
-def health_handler(job: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle health check requests"""
-    import torch
-
-    return {
-        "status": "success",
-        "output": {
+def health_handler(job: Dict[str, Any], request_id: str) -> Dict[str, Any]:
+    """
+    Enhanced health check endpoint.
+    
+    Verifies:
+    - System status
+    - GPU availability
+    - Model loading status
+    - Memory status
+    """
+    try:
+        health_status = {
             "status": "healthy",
-            "gpu_available": torch.cuda.is_available(),
-            "models_loaded": {
+            "timestamp": time.time(),
+            "gpu": {
+                "available": torch.cuda.is_available(),
+                "device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+            },
+            "models": {
                 "sentiment_analyzer": sentiment_analyzer is not None,
                 "technical_engine": technical_engine is not None,
+                "initialized": models_initialized,
             },
-            "timestamp": time.time(),
-        },
-    }
+            "request_id": request_id,
+        }
+
+        # Add GPU device name if available
+        if torch.cuda.is_available():
+            try:
+                health_status["gpu"]["device_name"] = torch.cuda.get_device_name(0)
+                health_status["gpu"]["memory_allocated_mb"] = torch.cuda.memory_allocated(0) / 1024**2
+                health_status["gpu"]["memory_reserved_mb"] = torch.cuda.memory_reserved(0) / 1024**2
+            except Exception as e:
+                logger.warning(f"[{request_id}] Could not get GPU details: {e}")
+                health_status["gpu"]["error"] = str(e)
+
+        # Test model functionality if loaded
+        if sentiment_analyzer is not None:
+            try:
+                # Quick test inference
+                test_result = sentiment_analyzer.analyze(["test"])
+                health_status["models"]["sentiment_test"] = "passed"
+            except Exception as e:
+                health_status["models"]["sentiment_test"] = f"failed: {str(e)}"
+                health_status["status"] = "degraded"
+
+        if technical_engine is not None:
+            try:
+                # Quick test computation
+                import pandas as pd
+                test_df = pd.DataFrame({
+                    "open": [100, 101],
+                    "high": [102, 103],
+                    "low": [99, 100],
+                    "close": [101, 102],
+                    "volume": [1000, 1100],
+                })
+                test_result = technical_engine.compute_all(test_df)
+                health_status["models"]["technical_test"] = "passed"
+            except Exception as e:
+                health_status["models"]["technical_test"] = f"failed: {str(e)}"
+                health_status["status"] = "degraded"
+
+        # Overall health determination
+        if not health_status["models"]["sentiment_analyzer"] and not health_status["models"]["technical_engine"]:
+            health_status["status"] = "unhealthy"
+
+        return {"status": "success", "output": health_status, "request_id": request_id}
+
+    except Exception as e:
+        logger.error(f"[{request_id}] Health check error: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "error": str(e),
+            "request_id": request_id,
+            "error_type": "health_check_failed",
+        }
 
 
 # ===============================================================================
@@ -237,16 +528,16 @@ def health_handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Main RunPod serverless handler
-
+    Main RunPod serverless handler with request tracing and error handling.
+    
     Routes requests to appropriate sub-handlers based on 'action' field.
-
+    
     Supported actions:
     - predict: Stock price prediction
     - sentiment: Sentiment analysis
     - indicators: Technical indicators
     - health: Health check
-
+    
     Input format:
     {
         "input": {
@@ -255,35 +546,54 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     """
+    # Generate unique request ID for tracing
+    request_id = str(uuid.uuid4())
+
     try:
+        # Ensure models are initialized
+        if not models_initialized:
+            logger.info(f"[{request_id}] Models not initialized, attempting initialization...")
+            initialize_models()
+
         # Extract action
         input_data = job.get("input", {})
         action = input_data.get("action", "health")
 
-        logger.info(f"Received request: action={action}")
+        logger.info(f"[{request_id}] Received request: action={action}")
 
         # Route to appropriate handler
         if action == "predict":
-            return predict_handler(job)
+            return predict_handler(job, request_id)
         elif action == "sentiment":
-            return sentiment_handler(job)
+            return sentiment_handler(job, request_id)
         elif action == "indicators":
-            return indicators_handler(job)
+            return indicators_handler(job, request_id)
         elif action == "health":
-            return health_handler(job)
+            return health_handler(job, request_id)
         else:
             return {
                 "status": "error",
                 "error": f"Unknown action: {action}",
                 "supported_actions": ["predict", "sentiment", "indicators", "health"],
+                "request_id": request_id,
+                "error_type": "invalid_action",
             }
 
+    except KeyboardInterrupt:
+        logger.warning(f"[{request_id}] Request interrupted")
+        raise  # Re-raise to allow RunPod to handle
     except Exception as e:
-        logger.error(f"Handler error: {e}")
+        logger.error(f"[{request_id}] Unhandled handler error: {e}", exc_info=True)
         return {
             "status": "error",
-            "error": str(e),
+            "error": "Internal server error",
+            "detail": str(e),
+            "request_id": request_id,
+            "error_type": "internal_error",
         }
+    finally:
+        # Always clear GPU cache after request
+        clear_gpu_cache()
 
 
 # ===============================================================================
@@ -292,8 +602,18 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 
 if __name__ == "__main__":
     logger.info("Starting RunPod serverless handler...")
+    logger.info(f"GPU available: {torch.cuda.is_available()}")
+
+    # Ensure models are initialized before starting
+    try:
+        initialize_models()
+        logger.info("Models initialized successfully")
+    except Exception as e:
+        logger.critical(f"Failed to initialize models: {e}", exc_info=True)
+        logger.critical("Starting handler anyway - requests may fail gracefully")
 
     # Start RunPod serverless worker
+    logger.info("Starting RunPod serverless worker...")
     runpod.serverless.start({"handler": handler})
 
     logger.info("RunPod handler started successfully")

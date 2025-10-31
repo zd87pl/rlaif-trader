@@ -65,6 +65,7 @@ dependencies = [
     "uvicorn[standard]>=0.27.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.1.0",
+    "runpod>=1.0.0",  # RunPod serverless deployment
 
     # Monitoring & Logging
     "evidently>=0.4.0",

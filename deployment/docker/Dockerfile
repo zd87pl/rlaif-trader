@@ -51,7 +51,8 @@ RUN pip install --no-cache-dir \
     fastapi==0.109.2 \
     uvicorn[standard]==0.27.1 \
     pydantic==2.6.1 \
-    pydantic-settings==2.1.0
+    pydantic-settings==2.1.0 \
+    runpod>=1.0.0
 
 # Stage 4: Data processing
 RUN pip install --no-cache-dir \
@@ -114,11 +115,15 @@ COPY --from=builder /opt/venv /opt/venv
 # Create application directory
 WORKDIR /app
 
-# Copy application code
+# Copy application code and install package
+COPY pyproject.toml ./
 COPY src/ /app/src/
 COPY configs/ /app/configs/
 COPY deployment/api/ /app/deployment/api/
 COPY deployment/runpod/ /app/deployment/runpod/
+
+# Install the package in editable mode so imports work correctly
+RUN pip install --no-cache-dir -e .
 
 # Create directories
 RUN mkdir -p \
