@@ -105,12 +105,16 @@ dev = [
     "plotly>=5.18.0",
 ]
 
+ibkr = [
+    "ib_insync>=0.9.86",
+]
+
 gpu = [
     "faiss-gpu>=1.7.4",
 ]
 
 all = [
-    "rlaif-trading[dev,gpu]",
+    "rlaif-trading[dev,gpu,ibkr]",
 ]
 
 [project.urls]
@@ -119,8 +123,8 @@ Documentation = "https://github.com/yourusername/rlaif-trading/blob/main/README.
 Repository = "https://github.com/yourusername/rlaif-trading"
 
 [project.scripts]
-rlaif-train = "src.train:main"
-rlaif-backtest = "src.backtesting.runner:main"
+rlaif-trade = "run_trading:main"
+rlaif-backtest = "run_backtest:main"
 rlaif-serve = "src.deployment.api.main:main"
 
 [tool.setuptools]
@@ -172,6 +176,7 @@ module = [
     "ta.*",
     "talib.*",
     "alpaca.*",
+    "ib_insync.*",
     "feast.*",
     "evidently.*",
 ]
