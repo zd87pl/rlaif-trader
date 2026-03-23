@@ -3,23 +3,26 @@
 RLAIF Trading Pipeline — Main Entry Point
 
 Usage:
-    # Dry run (signals only, no orders, no risk):
+    # Dry run (signals only, no orders):
     python run_trading.py --mode dry_run --symbols AAPL MSFT NVDA
 
-    # Alpaca paper trading:
+    # Alpaca paper trading with full ensemble:
     python run_trading.py --mode alpaca_paper --symbols AAPL MSFT
 
-    # IBKR paper trading (requires TWS/Gateway on port 7497):
+    # IBKR paper trading:
     python run_trading.py --mode ibkr_paper --symbols AAPL MSFT
 
-    # IBKR live trading (port 7496) — REAL MONEY:
-    python run_trading.py --mode ibkr_live --symbols AAPL
+    # Technical strategies only (no Claude API costs):
+    python run_trading.py --mode dry_run --symbols AAPL --no-agents
+
+    # Conviction-weighted ensemble (most conservative):
+    python run_trading.py --mode alpaca_paper --symbols AAPL --ensemble conviction_weighted
 
     # Run continuously every 60 minutes:
     python run_trading.py --mode alpaca_paper --symbols AAPL MSFT --loop --interval 60
 
-    # Single cycle then exit:
-    python run_trading.py --mode dry_run --symbols AAPL
+    # IBKR live trading — REAL MONEY:
+    python run_trading.py --mode ibkr_live --symbols AAPL --max-position-pct 0.05
 """
 
 import argparse
@@ -76,6 +79,27 @@ def main():
         default=0.55,
         help="Min confidence to trade (default: 0.55)",
     )
+    parser.add_argument(
+        "--no-agents",
+        action="store_true",
+        help="Disable Claude agent strategy (saves API costs)",
+    )
+    parser.add_argument(
+        "--no-news",
+        action="store_true",
+        help="Disable news data fetching",
+    )
+    parser.add_argument(
+        "--no-fundamentals",
+        action="store_true",
+        help="Disable fundamental data fetching",
+    )
+    parser.add_argument(
+        "--ensemble",
+        choices=["conviction_weighted", "weighted_average", "majority_vote"],
+        default="conviction_weighted",
+        help="Ensemble mode (default: conviction_weighted)",
+    )
 
     args = parser.parse_args()
 
@@ -99,6 +123,10 @@ def main():
         symbols=args.symbols,
         mode=args.mode,
         risk_config=risk_config,
+        enable_news=not args.no_news,
+        enable_fundamentals=not args.no_fundamentals,
+        enable_agents=not args.no_agents,
+        ensemble_mode=args.ensemble,
     )
 
     if args.loop:
@@ -118,11 +146,19 @@ def main():
 
             print(f"  {symbol:6s}  {action:6s}  score={score:+.2f}  conf={conf:.0%}  "
                   f"price=${price:.2f}  exec={exec_status}")
+
+            # Show individual strategy signals
+            if "strategy_signals" in r:
+                for ss in r["strategy_signals"]:
+                    print(f"    └─ {ss['strategy']:18s}  {ss['action']:6s}  "
+                          f"score={ss['score']:+.2f}  conf={ss['confidence']:.0%}")
+
         print("=" * 60)
 
-        # Print portfolio status
         status = pipeline.status()
-        print(f"\nPortfolio: {json.dumps(status.get('portfolio_summary', {}), indent=2)}")
+        print(f"\nStrategies: {status.get('strategies', [])}")
+        print(f"Ensemble: {status.get('ensemble_mode', '')}")
+        print(f"Portfolio: {json.dumps(status.get('portfolio_summary', {}), indent=2)}")
 
         if "account" in status:
             acct = status["account"]

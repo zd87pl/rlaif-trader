@@ -3,6 +3,7 @@ Backtesting engine — validate before you risk real money.
 
 Simulates the full pipeline against historical data:
 - Walk-forward (no lookahead)
+- Multi-strategy ensemble
 - Realistic transaction costs
 - Position sizing from risk manager
 - Full P&L, Sharpe, drawdown, win rate
@@ -15,9 +16,16 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
-from .agents import ManagerAgent, ClaudeClient
 from .data import AlpacaDataClient
 from .features.technical import TechnicalFeatureEngine
+from .strategies import (
+    Strategy,
+    MomentumStrategy,
+    MeanReversionStrategy,
+    AgentStrategy,
+    StrategyEnsemble,
+    Signal,
+)
 from .execution.risk_manager import RiskManager
 from .utils.logging import get_logger
 
@@ -39,7 +47,6 @@ class BacktestResult:
         if not self.trades:
             return {"error": "no trades"}
 
-        # Build equity curve from trades
         capital = initial_capital
         peak = capital
         max_dd = 0.0
@@ -88,6 +95,17 @@ class BacktestResult:
             else float("inf")
         )
 
+        # Strategy breakdown
+        strategy_stats = {}
+        for t in self.trades:
+            sname = t.get("strategy", "unknown")
+            if sname not in strategy_stats:
+                strategy_stats[sname] = {"trades": 0, "pnl": 0, "wins": 0}
+            strategy_stats[sname]["trades"] += 1
+            strategy_stats[sname]["pnl"] += t["pnl"]
+            if t["pnl"] > 0:
+                strategy_stats[sname]["wins"] += 1
+
         return {
             "initial_capital": initial_capital,
             "final_capital": capital,
@@ -104,6 +122,7 @@ class BacktestResult:
             "avg_loss": avg_loss,
             "profit_factor": profit_factor,
             "avg_trade_pnl": np.mean([t["pnl"] for t in self.trades]),
+            "strategy_breakdown": strategy_stats,
         }
 
     def print_report(self, initial_capital: float) -> None:
@@ -127,15 +146,27 @@ class BacktestResult:
         print(f"  Avg Win:           ${metrics['avg_win']:>12,.2f}")
         print(f"  Avg Loss:          ${metrics['avg_loss']:>12,.2f}")
         print(f"  Profit Factor:      {metrics['profit_factor']:>11.2f}")
+
+        # Strategy breakdown
+        strat_stats = metrics.get("strategy_breakdown", {})
+        if strat_stats:
+            print(f"\n  {'STRATEGY BREAKDOWN':^40}")
+            print(f"  {'-' * 40}")
+            for sname, stats in strat_stats.items():
+                wr = stats["wins"] / stats["trades"] * 100 if stats["trades"] > 0 else 0
+                print(
+                    f"  {sname:20s}  trades={stats['trades']:3d}  "
+                    f"P&L=${stats['pnl']:>10,.2f}  win={wr:.0f}%"
+                )
+
         print("=" * 60)
 
 
 class Backtester:
     """
-    Walk-forward backtester.
+    Walk-forward backtester with multi-strategy support.
 
-    Uses the multi-agent system to generate signals on historical data,
-    then simulates execution with transaction costs.
+    Can test individual strategies or the full ensemble.
     """
 
     def __init__(
@@ -146,7 +177,9 @@ class Backtester:
         initial_capital: float = 100_000.0,
         transaction_cost_pct: float = 0.001,
         signal_interval_days: int = 5,
-        use_agents: bool = True,
+        strategies: Optional[List[str]] = None,
+        ensemble_mode: str = "conviction_weighted",
+        use_agents: bool = False,
         risk_config: Optional[Dict[str, Any]] = None,
     ):
         """
@@ -155,9 +188,13 @@ class Backtester:
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             initial_capital: Starting cash
-            transaction_cost_pct: Cost per trade as fraction (0.001 = 0.1%)
+            transaction_cost_pct: Cost per trade as fraction
             signal_interval_days: Days between signal generation
-            use_agents: If True, use Claude agents. If False, use technical-only signals.
+            strategies: List of strategy names to include
+                Options: "momentum", "mean_reversion", "agent"
+                Default: ["momentum", "mean_reversion"]
+            ensemble_mode: How to combine strategies
+            use_agents: If True, include Claude agent strategy (costs API credits)
             risk_config: Risk manager config overrides
         """
         load_dotenv()
@@ -168,18 +205,28 @@ class Backtester:
         self.initial_capital = initial_capital
         self.transaction_cost_pct = transaction_cost_pct
         self.signal_interval_days = signal_interval_days
-        self.use_agents = use_agents
 
         self.data_client = AlpacaDataClient()
         self.tech_engine = TechnicalFeatureEngine()
 
-        if use_agents:
-            self.claude_client = ClaudeClient()
-            self.manager = ManagerAgent(
-                claude_client=self.claude_client, debate_rounds=1
-            )
-        else:
-            self.manager = None
+        # Build strategy list
+        strategy_names = strategies or ["momentum", "mean_reversion"]
+        if use_agents and "agent" not in strategy_names:
+            strategy_names.append("agent")
+
+        strategy_objects = []
+        for name in strategy_names:
+            if name == "momentum":
+                strategy_objects.append(MomentumStrategy(weight=1.0))
+            elif name == "mean_reversion":
+                strategy_objects.append(MeanReversionStrategy(weight=0.8))
+            elif name == "agent":
+                strategy_objects.append(AgentStrategy(weight=1.5))
+
+        self.ensemble = StrategyEnsemble(
+            strategies=strategy_objects,
+            mode=ensemble_mode,
+        )
 
         risk_config = risk_config or {}
         self.risk_manager = RiskManager(**risk_config)
@@ -188,12 +235,14 @@ class Backtester:
         """Run the backtest."""
         logger.info(
             f"Backtest: {self.symbols}, {self.start_date} to {self.end_date}, "
-            f"${self.initial_capital:,.0f}, agents={'ON' if self.use_agents else 'OFF'}"
+            f"${self.initial_capital:,.0f}, "
+            f"strategies={[s.name for s in self.ensemble.strategies]}, "
+            f"ensemble={self.ensemble.mode}"
         )
 
         result = BacktestResult()
         capital = self.initial_capital
-        positions: Dict[str, Dict[str, Any]] = {}  # symbol -> {qty, entry_price, entry_date}
+        positions: Dict[str, Dict[str, Any]] = {}
 
         # Download all data upfront
         all_data = {}
@@ -224,22 +273,23 @@ class Backtester:
                 if len(available) < 50:
                     continue
 
-                latest = available.iloc[-1]
-                current_price = float(latest["close"])
+                current_price = float(available.iloc[-1]["close"])
 
-                # Generate signal
-                if self.use_agents:
-                    signal = self._agent_signal(symbol, available, latest)
-                else:
-                    signal = self._technical_signal(latest)
+                # Generate ensemble signal
+                signal = self.ensemble.generate_signal(
+                    symbol=symbol,
+                    price_data=available,
+                    features=available,
+                    news_data=None,
+                    fundamental_data=None,
+                )
 
-                action = signal["action"]
-                score = signal["score"]
-                confidence = signal["confidence"]
+                action = signal.action
+                score = signal.score
+                confidence = signal.confidence
 
                 # Execute
                 if action == "buy" and symbol not in positions:
-                    # Position sizing
                     position_size = capital * self.risk_manager.max_position_pct
                     position_size *= min(confidence, 1.0) * min(abs(score), 1.0)
                     qty = int(position_size / current_price)
@@ -254,41 +304,39 @@ class Backtester:
                                 "entry_date": date,
                                 "score": score,
                                 "confidence": confidence,
+                                "strategy": signal.strategy_name,
                             }
                             logger.info(
                                 f"  BUY {qty} {symbol} @ ${current_price:.2f} "
-                                f"(score={score:.2f})"
+                                f"({signal.strategy_name} score={score:+.2f})"
                             )
 
                 elif action == "sell" and symbol in positions:
                     pos = positions.pop(symbol)
-                    proceeds = (
-                        pos["qty"] * current_price * (1 - self.transaction_cost_pct)
-                    )
+                    proceeds = pos["qty"] * current_price * (1 - self.transaction_cost_pct)
                     pnl = proceeds - (pos["qty"] * pos["entry_price"])
                     capital += proceeds
 
-                    result.add_trade(
-                        {
-                            "symbol": symbol,
-                            "entry_date": str(pos["entry_date"].date()),
-                            "exit_date": str(date.date()),
-                            "entry_price": pos["entry_price"],
-                            "exit_price": current_price,
-                            "qty": pos["qty"],
-                            "pnl": pnl,
-                            "return": pnl / (pos["qty"] * pos["entry_price"]),
-                            "hold_days": (date - pos["entry_date"]).days,
-                            "entry_score": pos["score"],
-                        }
-                    )
+                    result.add_trade({
+                        "symbol": symbol,
+                        "entry_date": str(pos["entry_date"].date()),
+                        "exit_date": str(date.date()),
+                        "entry_price": pos["entry_price"],
+                        "exit_price": current_price,
+                        "qty": pos["qty"],
+                        "pnl": pnl,
+                        "return": pnl / (pos["qty"] * pos["entry_price"]),
+                        "hold_days": (date - pos["entry_date"]).days,
+                        "entry_score": pos["score"],
+                        "strategy": pos.get("strategy", "unknown"),
+                    })
 
                     logger.info(
                         f"  SELL {pos['qty']} {symbol} @ ${current_price:.2f} "
                         f"P&L=${pnl:,.2f} ({pnl / (pos['qty'] * pos['entry_price']):.1%})"
                     )
 
-        # Close any remaining positions at end
+        # Close remaining positions
         for symbol, pos in list(positions.items()):
             df = all_data[symbol]
             if len(df) > 0:
@@ -297,115 +345,19 @@ class Backtester:
                 pnl = proceeds - (pos["qty"] * pos["entry_price"])
                 capital += proceeds
 
-                result.add_trade(
-                    {
-                        "symbol": symbol,
-                        "entry_date": str(pos["entry_date"].date()),
-                        "exit_date": self.end_date,
-                        "entry_price": pos["entry_price"],
-                        "exit_price": final_price,
-                        "qty": pos["qty"],
-                        "pnl": pnl,
-                        "return": pnl / (pos["qty"] * pos["entry_price"]),
-                        "hold_days": 0,
-                        "entry_score": pos["score"],
-                    }
-                )
+                result.add_trade({
+                    "symbol": symbol,
+                    "entry_date": str(pos["entry_date"].date()),
+                    "exit_date": self.end_date,
+                    "entry_price": pos["entry_price"],
+                    "exit_price": final_price,
+                    "qty": pos["qty"],
+                    "pnl": pnl,
+                    "return": pnl / (pos["qty"] * pos["entry_price"]),
+                    "hold_days": 0,
+                    "entry_score": pos["score"],
+                    "strategy": pos.get("strategy", "unknown"),
+                })
 
         result.print_report(self.initial_capital)
         return result
-
-    def _agent_signal(
-        self,
-        symbol: str,
-        df: pd.DataFrame,
-        latest: pd.Series,
-    ) -> Dict[str, Any]:
-        """Use multi-agent system for signal."""
-        # Build agent input (same as pipeline)
-        def safe_float(val, default=0.0):
-            try:
-                v = float(val)
-                return v if v == v else default
-            except (ValueError, TypeError):
-                return default
-
-        technical = {
-            "current_price": safe_float(latest.get("close")),
-            "rsi": safe_float(latest.get("rsi", 50)),
-            "macd": safe_float(latest.get("macd", 0)),
-            "trend": "uptrend" if safe_float(latest.get("close")) > safe_float(latest.get("sma_50", 0)) else "downtrend",
-        }
-
-        returns = df["close"].pct_change().dropna()
-        risk = {
-            "volatility": safe_float(returns.std() * (252 ** 0.5)),
-            "max_drawdown": 0.15,
-            "sharpe_ratio": safe_float(
-                returns.mean() / (returns.std() + 1e-9) * (252 ** 0.5)
-            ),
-            "beta": 1.0,
-        }
-
-        agent_data = {
-            "technical": technical,
-            "risk": risk,
-            "sentiment": {"news_sentiment": 0.0, "social_sentiment": 0.0},
-            "fundamentals": {"symbol": symbol},
-        }
-
-        try:
-            response = self.manager.analyze(symbol=symbol, data=agent_data)
-            action = "buy" if response.score >= 0.3 else "sell" if response.score <= -0.3 else "hold"
-            return {
-                "action": action,
-                "score": response.score,
-                "confidence": response.confidence,
-            }
-        except Exception as e:
-            logger.error(f"Agent signal failed for {symbol}: {e}")
-            return self._technical_signal(latest)
-
-    def _technical_signal(self, latest: pd.Series) -> Dict[str, Any]:
-        """Simple technical signal (no Claude API calls)."""
-        score = 0.0
-        signals = 0
-
-        # RSI
-        rsi = float(latest.get("rsi", 50))
-        if rsi < 30:
-            score += 0.5
-            signals += 1
-        elif rsi > 70:
-            score -= 0.5
-            signals += 1
-
-        # MACD
-        macd_hist = float(latest.get("macd_hist", 0))
-        if macd_hist > 0:
-            score += 0.3
-            signals += 1
-        elif macd_hist < 0:
-            score -= 0.3
-            signals += 1
-
-        # Price vs SMA
-        close = float(latest.get("close", 0))
-        sma_50 = float(latest.get("sma_50", close))
-        sma_200 = float(latest.get("sma_200", close))
-
-        if close > sma_50 > sma_200:
-            score += 0.4
-            signals += 1
-        elif close < sma_50 < sma_200:
-            score -= 0.4
-            signals += 1
-
-        # Normalize
-        if signals > 0:
-            score /= signals
-
-        confidence = min(abs(score) + 0.3, 1.0)
-        action = "buy" if score >= 0.3 else "sell" if score <= -0.3 else "hold"
-
-        return {"action": action, "score": score, "confidence": confidence}
