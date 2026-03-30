@@ -1,28 +1,30 @@
 """
 RLAIF (Reinforcement Learning from AI Feedback) Module
 
-This module implements the core RLAIF feedback loop:
-1. PreferenceGenerator: Creates preference pairs from market outcomes
-2. RewardModel: Learns to predict good vs bad trading decisions
-3. RLAIFFineTuner: Fine-tunes Claude agents using PPO/DPO
-4. OutcomeTracker: Monitors live trading results
-
-Key Innovation:
-Uses actual market outcomes (profit/loss, risk-adjusted returns) as ground truth
-to create preference pairs, then fine-tunes the multi-agent system to make
-better decisions over time.
-
-Research shows 20-40% improvement with RLAIF over static LLM approaches.
+Core loop: Market outcomes -> Preference pairs -> Reward model -> Fine-tuned agents
+v2.1: Added process-level reasoning verification, composite rewards, options outcomes
 """
 
 from .preference_generator import PreferenceGenerator
 from .reward_model import RewardModel
 from .rlaif_finetuner import RLAIFFineTuner
-from .outcome_tracker import OutcomeTracker
+
+try:
+    from .outcome_tracker import OutcomeTracker
+except ImportError:
+    OutcomeTracker = None
+
+try:
+    from .options_outcome_tracker import OptionsOutcomeTracker
+except ImportError:
+    OptionsOutcomeTracker = None
+
+from .reasoning_verifier import ProcessRewardModel, DynamicSemanticReward, ReasoningChain
+from .composite_reward import CompositeRewardFunction
 
 __all__ = [
-    "PreferenceGenerator",
-    "RewardModel",
-    "RLAIFFineTuner",
-    "OutcomeTracker",
+    "PreferenceGenerator", "RewardModel", "RLAIFFineTuner",
+    "OutcomeTracker", "OptionsOutcomeTracker",
+    "ProcessRewardModel", "DynamicSemanticReward", "ReasoningChain",
+    "CompositeRewardFunction",
 ]

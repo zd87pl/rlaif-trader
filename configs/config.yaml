@@ -704,3 +704,16 @@ development:
   mock_external_apis: false
   deterministic: true
   seed: 42
+
+# =============================================================================
+# MLX Local Inference Configuration
+# =============================================================================
+mlx:
+  enabled: true
+  backend: mlx  # mlx or claude
+  model: mlx-community/Qwen2.5-72B-Instruct-4bit
+  fallback_model: mlx-community/Qwen2.5-7B-Instruct-4bit
+  max_tokens: 4096
+  temperature: 0.7
+  context_length: 8192
+  cache_dir: ~/.cache/mlx-models

@@ -4,19 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rlaif-trading"
-version = "0.1.0"
-description = "RLAIF-powered stock prediction system with Claude API and foundation models"
+version = "0.2.0"
+description = "RLAIF-powered trading system with options strategies, local MLX inference, and Claude API integration"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
     {name = "RLAIF Trading Team"}
 ]
-keywords = ["trading", "rlaif", "reinforcement-learning", "llm", "claude", "finance"]
+keywords = ["trading", "rlaif", "reinforcement-learning", "llm", "claude", "mlx", "options", "finance"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Financial and Insurance Industry",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Office/Business :: Financial :: Investment",
 ]
 
@@ -25,92 +26,84 @@ dependencies = [
     "numpy>=1.24.0",
     "pandas>=2.0.0",
     "scipy>=1.10.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "click>=8.1.0",
+    "tqdm>=4.66.0",
+    "requests>=2.31.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.1.0",
 
-    # ML/DL
+    # Technical Analysis (pure Python)
+    "ta>=0.11.0",
+]
+
+[project.optional-dependencies]
+ml = [
     "torch>=2.0.0",
     "transformers>=4.30.0",
+    "sentence-transformers>=2.2.0",
     "stable-baselines3>=2.0.0",
+]
 
-    # Time Series Foundation Models
-    "timesfm[torch]>=0.1.0",
-
-    # LLM Integration
+llm-cloud = [
     "anthropic>=0.18.0",
     "langchain>=0.1.0",
     "langchain-anthropic>=0.1.0",
     "langchain-community>=0.0.20",
-
-    # NLP & Embeddings
-    "sentence-transformers>=2.2.0",
-    "faiss-cpu>=1.7.4",  # Use faiss-gpu for production
     "tiktoken>=0.5.0",
+]
 
-    # Financial NLP
+llm-local = [
+    "mlx>=0.20.0",
+    "mlx-lm>=0.20.0",
+]
+
+options = [
     "yfinance>=0.2.0",
+    "py_vollib>=1.0.1",
+]
+
+broker = [
     "alpaca-py>=0.20.0",
+]
 
-    # Feature Engineering
-    "ta-lib>=0.4.28",  # Technical analysis
-    "ta>=0.11.0",  # Alternative TA library (pure Python)
-
-    # Feature Store
-    "feast[redis]>=0.35.0",
-
-    # Data Processing
+data = [
     "pyarrow>=12.0.0",
     "fastparquet>=2023.4.0",
+]
 
-    # API & Deployment
-    "fastapi>=0.109.0",
-    "uvicorn[standard]>=0.27.0",
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.1.0",
-
-    # Monitoring & Logging
+monitoring = [
     "evidently>=0.4.0",
     "prometheus-client>=0.19.0",
     "python-json-logger>=2.0.7",
-
-    # Experiment Tracking
     "mlflow>=2.10.0",
-    "wandb>=0.16.0",
+]
 
-    # Utilities
-    "python-dotenv>=1.0.0",
-    "tqdm>=4.66.0",
-    "click>=8.1.0",
-    "pyyaml>=6.0",
-    "requests>=2.31.0",
-    "beautifulsoup4>=4.12.0",
-    "selenium>=4.17.0",  # For SEC filings scraping
+api = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+]
 
-    # Testing & Quality
+dev = [
+    "jupyter>=1.0.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "plotly>=5.18.0",
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=0.23.0",
     "black>=24.0.0",
     "ruff>=0.2.0",
     "mypy>=1.8.0",
-
-    # Optimization
-    "optuna>=3.5.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "jupyter>=1.0.0",
-    "ipykernel>=6.29.0",
-    "matplotlib>=3.8.0",
-    "seaborn>=0.13.0",
-    "plotly>=5.18.0",
-]
-
-gpu = [
-    "faiss-gpu>=1.7.4",
 ]
 
 all = [
-    "rlaif-trading[dev,gpu]",
+    "rlaif-trading[ml,llm-cloud,options,broker,data,monitoring,api,dev]",
+]
+
+full = [
+    "rlaif-trading[all,llm-local]",
 ]
 
 [project.urls]
@@ -119,12 +112,13 @@ Documentation = "https://github.com/yourusername/rlaif-trading/blob/main/README.
 Repository = "https://github.com/yourusername/rlaif-trading"
 
 [project.scripts]
+rlaif = "src.cli:cli"
 rlaif-train = "src.train:main"
 rlaif-backtest = "src.backtesting.runner:main"
 rlaif-serve = "src.deployment.api.main:main"
 
 [tool.setuptools]
-packages = ["src"]
+packages = {find = {where = ["."], include = ["src", "src.*"]}}
 
 [tool.setuptools.package-data]
 src = ["*.yaml", "*.json"]
@@ -174,6 +168,10 @@ module = [
     "alpaca.*",
     "feast.*",
     "evidently.*",
+    "mlx.*",
+    "mlx_lm.*",
+    "py_vollib.*",
+    "yfinance.*",
 ]
 ignore_missing_imports = true
 
