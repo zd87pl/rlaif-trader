@@ -13,10 +13,13 @@ Designed to run as a long-lived daemon process with graceful shutdown
 and thread-safe state management.
 """
 
+import json
 import signal
 import threading
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 import pytz
@@ -134,6 +137,8 @@ class TradingScheduler:
         self._dry_run: bool = config.get("dry_run", True)
         self._retrain_enabled: bool = config.get("retrain_enabled", True)
         self._monitor_interval_min: int = config.get("monitor_interval_min", 15)
+        self._telemetry_dir = Path(config.get("telemetry_dir", "./data/telemetry"))
+        self._telemetry_dir.mkdir(parents=True, exist_ok=True)
 
         # Signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -205,6 +210,15 @@ class TradingScheduler:
             with self._lock:
                 self._running = False
             logger.info("TradingScheduler stopped")
+
+    def start(self, pipeline=None, symbols: Optional[List[str]] = None, mode: str = "paper") -> None:
+        """Compatibility entrypoint used by the main pipeline."""
+        if pipeline is not None:
+            self.pipeline = pipeline
+        if symbols is not None:
+            self._symbols = list(symbols)
+        self._dry_run = mode != "live"
+        self.run()
 
     def stop(self) -> None:
         """Request graceful shutdown."""
@@ -442,7 +456,9 @@ class TradingScheduler:
                 # Run multi-agent pipeline if available
                 if self.pipeline is not None:
                     try:
-                        if hasattr(self.pipeline, "run"):
+                        if hasattr(self.pipeline, "analyze"):
+                            result = self.pipeline.analyze(symbol)
+                        elif hasattr(self.pipeline, "run"):
                             result = self.pipeline.run(symbol)
                         elif callable(self.pipeline):
                             result = self.pipeline(symbol)
@@ -450,14 +466,32 @@ class TradingScheduler:
                             result = {}
 
                         if isinstance(result, dict):
+                            manager = result.get("manager_decision", result)
+                            action = (
+                                manager.get("action")
+                                or manager.get("decision")
+                                or result.get("action")
+                                or "hold"
+                            )
+                            confidence = (
+                                manager.get("confidence", result.get("confidence", 0.0))
+                            )
+                            normalized_action = str(action).lower()
+                            if normalized_action in {"long", "buy"}:
+                                normalized_action = "buy"
+                            elif normalized_action in {"short", "sell"}:
+                                normalized_action = "sell"
+                            else:
+                                normalized_action = "hold"
+
                             signal_data.update({
-                                "action": result.get("action", "hold"),
-                                "confidence": result.get("confidence", 0.0),
-                                "score": result.get("score", 0.0),
+                                "action": normalized_action,
+                                "confidence": confidence,
+                                "score": result.get("score", confidence),
                                 "entry_price": result.get("entry_price"),
                                 "stop_loss": result.get("stop_loss"),
                                 "take_profit": result.get("take_profit"),
-                                "agent_analyses": result.get("agent_analyses", {}),
+                                "agent_analyses": result.get("agents", result.get("agent_analyses", {})),
                                 "options_analysis": result.get("options_analysis"),
                             })
                     except Exception as e:
@@ -531,6 +565,14 @@ class TradingScheduler:
                 "confidence": sig.get("confidence", 0),
                 "timestamp": _now_et().isoformat(),
             }
+            signal_payload = {
+                "symbol": symbol,
+                "side": "buy" if action == "buy" else "sell",
+                "qty": sig.get("position_size", 1),
+                "order_type": sig.get("order_type", "market"),
+                "stop_price": sig.get("stop_loss"),
+                "time_in_force": sig.get("time_in_force", "day"),
+            }
 
             if self._dry_run:
                 order_result["status"] = "simulated"
@@ -538,17 +580,13 @@ class TradingScheduler:
                 logger.info(f"[DRY RUN] Would execute: {action} {symbol}")
             elif self.oms is not None:
                 try:
-                    oms_result = self.oms.submit_order(
-                        symbol=symbol,
-                        side="buy" if action == "buy" else "sell",
-                        qty=sig.get("position_size", 100),
-                        order_type=sig.get("order_type", "market"),
-                        stop_loss=sig.get("stop_loss"),
-                        take_profit=sig.get("take_profit"),
-                    )
-                    order_result["status"] = "submitted"
+                    oms_result = self.oms.execute_signal(signal_payload)
+                    order_result["status"] = oms_result.get("status", "submitted")
                     order_result["order_id"] = oms_result.get("order_id")
-                    order_result["fill_price"] = oms_result.get("fill_price")
+                    order_result["fill_price"] = (
+                        oms_result.get("filled_avg_price")
+                        or oms_result.get("fill_price")
+                    )
                 except Exception as e:
                     order_result["status"] = "error"
                     order_result["error"] = str(e)
@@ -557,6 +595,7 @@ class TradingScheduler:
                 order_result["status"] = "no_oms"
                 logger.warning("No OMS configured")
 
+            self._record_telemetry(sig, order_result)
             results.append(order_result)
             executed += 1
 
@@ -585,27 +624,20 @@ class TradingScheduler:
                 summary["total_positions"] = len(positions)
 
                 for pos in positions:
+                    current_price = pos.get("current_price", pos.get("market_value", 0))
+                    unrealized = pos.get("unrealized_pnl", pos.get("unrealized_pl", 0))
+                    quantity = pos.get("quantity", pos.get("qty", 0))
+                    entry_price = pos.get("entry_price", pos.get("avg_entry_price", 0))
                     pos_info: Dict[str, Any] = {
                         "symbol": pos.get("symbol", "?"),
                         "side": pos.get("side", "?"),
-                        "quantity": pos.get("quantity", 0),
-                        "unrealized_pnl": pos.get("unrealized_pnl", 0),
-                        "entry_price": pos.get("entry_price", 0),
-                        "current_price": pos.get("current_price", 0),
+                        "quantity": quantity,
+                        "unrealized_pnl": unrealized,
+                        "entry_price": entry_price,
+                        "current_price": current_price,
                     }
-                    summary["total_unrealized_pnl"] += pos_info["unrealized_pnl"]
+                    summary["total_unrealized_pnl"] += unrealized
                     summary["positions"].append(pos_info)
-
-                    # Check stop-loss breach
-                    if pos.get("stop_loss") and pos.get("current_price"):
-                        if pos["side"] == "long" and pos["current_price"] <= pos["stop_loss"]:
-                            alert = f"STOP HIT: {pos['symbol']} @ {pos['current_price']}"
-                            summary["alerts"].append(alert)
-                            self._send_alert(alert, level="warning")
-                        elif pos["side"] == "short" and pos["current_price"] >= pos["stop_loss"]:
-                            alert = f"STOP HIT: {pos['symbol']} @ {pos['current_price']}"
-                            summary["alerts"].append(alert)
-                            self._send_alert(alert, level="warning")
 
             except Exception as e:
                 logger.error(f"Error monitoring positions: {e}", exc_info=True)
@@ -620,6 +652,13 @@ class TradingScheduler:
             except Exception as e:
                 logger.error(f"Error checking Greeks: {e}")
 
+        event = {
+            "event": "paper_portfolio_snapshot",
+            "timestamp": _now_et().isoformat(),
+            "summary": summary,
+        }
+        logger.info("paper_portfolio_snapshot", extra=event)
+        self._persist_event("paper_portfolio_snapshot", event)
         return summary
 
     def end_of_day_routine(self) -> Dict:
@@ -673,6 +712,13 @@ class TradingScheduler:
             f"W/L={summary['winning_trades']}/{summary['losing_trades']}"
         )
 
+        event = {
+            "event": "paper_eod_summary",
+            "timestamp": _now_et().isoformat(),
+            "summary": summary,
+        }
+        logger.info("paper_eod_summary", extra=event)
+        self._persist_event("paper_eod_summary", event)
         return summary
 
     def weekend_retrain(self) -> Dict:
@@ -735,6 +781,68 @@ class TradingScheduler:
     # ==================================================================================
     # Helpers
     # ==================================================================================
+
+    def _record_telemetry(self, signal: Dict[str, Any], order_result: Dict[str, Any]) -> None:
+        event = {
+            "event": "paper_signal_executed",
+            "timestamp": _now_et().isoformat(),
+            "signal": signal,
+            "order_result": order_result,
+            "dry_run": self._dry_run,
+        }
+        logger.info("paper_signal_executed", extra=event)
+        self._persist_event("paper_signal_executed", event)
+
+        if self.pipeline is None:
+            return
+
+        preference_generator = getattr(self.pipeline, "preference_generator", None)
+        outcome_tracker = getattr(self.pipeline, "outcome_tracker", None)
+
+        if preference_generator is None:
+            return
+
+        try:
+            decision = preference_generator.record_decision(
+                symbol=signal.get("symbol", ""),
+                agent_response=SimpleNamespace(
+                    analysis=signal.get("analysis", signal.get("action", "hold")),
+                    score=float(signal.get("score", signal.get("confidence", 0.0)) or 0.0),
+                    confidence=float(signal.get("confidence", 0.0) or 0.0),
+                    reasoning=signal.get("reasoning", []),
+                    agent_name="scheduler",
+                ),
+                action=signal.get("action", "hold"),
+                position_size=float(signal.get("position_size", signal.get("qty", 1)) or 1),
+                market_data={
+                    "close": order_result.get("filled_avg_price") or order_result.get("fill_price"),
+                    "status": order_result.get("status"),
+                },
+                features=signal.get("features", {}),
+                rag_context=signal.get("rag_context"),
+                entry_price=order_result.get("filled_avg_price") or order_result.get("fill_price"),
+            )
+        except Exception as exc:
+            logger.error("Failed to record preference decision: %s", exc)
+            return
+
+        if (
+            outcome_tracker is not None
+            and order_result.get("status") in {"filled", "submitted", "simulated"}
+            and signal.get("action") in {"buy", "sell"}
+        ):
+            try:
+                outcome_tracker.track_decision(decision, quantity=decision.position_size)
+            except Exception as exc:
+                logger.error("Failed to track decision outcome: %s", exc)
+
+    def _persist_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+        path = self._telemetry_dir / f"{event_type}.jsonl"
+        try:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, default=str) + "\n")
+        except Exception as exc:
+            logger.error("Failed to persist telemetry event %s: %s", event_type, exc)
 
     def _send_alert(self, message: str, level: str = "info") -> None:
         """Send an alert/notification."""

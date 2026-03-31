@@ -2,35 +2,37 @@
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import yaml
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Config(BaseSettings):
     """Main configuration class using Pydantic settings"""
 
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
+
     # API Keys
-    anthropic_api_key: str = Field(default="", env="ANTHROPIC_API_KEY")
-    alpaca_api_key: str = Field(default="", env="ALPACA_API_KEY")
-    alpaca_secret_key: str = Field(default="", env="ALPACA_SECRET_KEY")
+    anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
+    alpaca_api_key: str = Field(default="", validation_alias="ALPACA_API_KEY")
+    alpaca_secret_key: str = Field(default="", validation_alias="ALPACA_SECRET_KEY")
     alpaca_base_url: str = Field(
-        default="https://paper-api.alpaca.markets", env="ALPACA_BASE_URL"
+        default="https://paper-api.alpaca.markets",
+        validation_alias="ALPACA_BASE_URL",
     )
 
     # Device
-    device: str = Field(default="cuda", env="DEVICE")
+    device: str = Field(default="cuda", validation_alias="DEVICE")
 
     # Paths
     data_dir: Path = Field(default=Path("./historical_data"))
     log_dir: Path = Field(default=Path("./logs"))
     model_dir: Path = Field(default=Path("./models/checkpoints"))
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 
 # Global config instance
@@ -38,7 +40,7 @@ _config: Optional[Dict[str, Any]] = None
 _settings: Optional[Config] = None
 
 
-def load_config(config_path: str | Path = "configs/config.yaml") -> Dict[str, Any]:
+def load_config(config_path: Union[str, Path] = "configs/config.yaml") -> Dict[str, Any]:
     """Load configuration from YAML file"""
     global _config
 

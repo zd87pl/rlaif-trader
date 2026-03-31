@@ -29,6 +29,8 @@ from pathlib import Path
 import click
 from dotenv import load_dotenv
 
+from .chat_interface import ChatRouter, run_chat_session
+
 load_dotenv()
 
 # Ensure project root is importable
@@ -83,6 +85,27 @@ def cli(ctx, config, verbose):
     ctx.ensure_object(dict)
     ctx.obj["config"] = config
     ctx.obj["verbose"] = verbose
+
+
+# ---------------------------------------------------------------------------
+# chat
+# ---------------------------------------------------------------------------
+@cli.command()
+@click.option("--message", "-m", default=None, help="Single plain-English request instead of interactive chat.")
+@click.pass_context
+def chat(ctx, message):
+    """Start a plain-English chat session over the trading pipeline."""
+    router = ChatRouter(
+        pipeline_factory=lambda config: _pipeline(config=config),
+        config_path=ctx.obj["config"],
+    )
+
+    if message:
+        click.echo(router.handle(message))
+        return
+
+    _header("Chat")
+    run_chat_session(router, input_fn=click.prompt, output_fn=click.echo)
 
 
 # ---------------------------------------------------------------------------
