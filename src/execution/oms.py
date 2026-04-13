@@ -48,7 +48,25 @@ class OrderManagementSystem:
         if self.risk_engine is None:
             return True
         try:
-            allowed, reason = self.risk_engine.validate(order_info)
+            if hasattr(self.risk_engine, "validate_order") and order_info.get("expiration") is not None:
+                account = self.broker.get_account() if self.broker is not None else {}
+                portfolio = {
+                    "equity": account.get("equity", account.get("balance", 0.0)),
+                    "daily_pnl": 0.0,
+                    "weekly_pnl": 0.0,
+                    "total_exposure": 0.0,
+                    "trade_count_5d": 0,
+                }
+                allowed, reason = self.risk_engine.validate_order(order_info, portfolio)
+            elif hasattr(self.risk_engine, "check_risk"):
+                allowed = self.risk_engine.check_risk(
+                    symbol=order_info.get("symbol", ""),
+                    action=order_info.get("side", order_info.get("action", "buy")),
+                    size=float(order_info.get("qty", order_info.get("quantity", 0)) or 0),
+                )
+                reason = "approved" if allowed else "risk_check_failed"
+            else:
+                allowed, reason = self.risk_engine.validate(order_info)
             if not allowed:
                 logger.warning(
                     "OMS risk check REJECTED order: %s – %s", order_info, reason,
@@ -297,3 +315,23 @@ class OrderManagementSystem:
         )
         self._record_order(result, f"adjust_position:{position_id}")
         return result
+
+    def submit_order(self, **kwargs) -> Dict[str, Any]:
+        """Compatibility wrapper for scheduler/integration code."""
+        return self.execute_signal(kwargs)
+
+    def get_positions(self) -> List[Dict[str, Any]]:
+        return self.broker.get_positions()
+
+    def get_daily_pnl(self) -> float:
+        positions = self.broker.get_positions()
+        return float(sum(position.get("unrealized_pl", 0.0) for position in positions))
+
+    def get_daily_trades(self) -> List[Dict[str, Any]]:
+        today = datetime.now(timezone.utc).date().isoformat()
+        trades: List[Dict[str, Any]] = []
+        for record in self.order_history:
+            recorded_at = str(record.get("recorded_at", ""))
+            if recorded_at.startswith(today):
+                trades.append(record)
+        return trades

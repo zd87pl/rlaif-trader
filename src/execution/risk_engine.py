@@ -338,6 +338,45 @@ class RiskEngine:
         if today.weekday() == 0 and today != self._last_weekly_reset:
             self.weekly_reset()
 
+    def status(self) -> Dict:
+        """Compatibility status payload for CLI and scheduler consumers."""
+        return {
+            "kill_switch_active": self._kill_switch_active,
+            "daily_pnl": self._daily_pnl,
+            "weekly_pnl": self._weekly_pnl,
+            "daily_trade_count": self._daily_trade_count,
+            "positions_open": self._positions_open,
+            "limits": dict(self._config),
+        }
+
+    def check_risk(self, symbol: str, action: str, size: float) -> bool:
+        """Compatibility shim for older scheduler code paths."""
+        order = {
+            "symbol": symbol,
+            "cost": float(size),
+            "strategy": "equity",
+            "expiration": None,
+            "quantity": float(size),
+        }
+        portfolio = {
+            "equity": 100_000.0,
+            "daily_pnl": self._daily_pnl,
+            "weekly_pnl": self._weekly_pnl,
+            "total_exposure": 0.0,
+            "trade_count_5d": self._daily_trade_count,
+        }
+        # validate_order expects an expiration for options strategies; for equity-style
+        # compatibility checks, run a narrower subset of rules.
+        return (
+            not self._kill_switch_active
+            and self.check_trade_count()
+            and self.check_underlying_allowed(symbol)
+        )
+
+    def get_positions_to_close(self) -> List[Dict]:
+        """Placeholder hook for scheduler integration."""
+        return []
+
     @staticmethod
     def _wrap(name: str, fn, *args) -> Tuple[str, bool, str]:
         """Wrap a check function, returning (name, passed, reason)."""

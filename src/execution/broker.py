@@ -910,3 +910,20 @@ class PaperBroker(BrokerInterface):
 
     def is_market_open(self) -> bool:
         return self._market_open
+
+    def is_connected(self) -> bool:
+        return self._connected
+
+    def flatten_all(self) -> Dict[str, Any]:
+        results: List[Dict[str, Any]] = []
+        for position in list(self.get_positions()):
+            close_side = "sell" if position["qty"] > 0 else "buy"
+            results.append(
+                self.submit_order(
+                    symbol=position["symbol"],
+                    qty=abs(position["qty"]),
+                    side=close_side,
+                    order_type="market",
+                )
+            )
+        return {"closed": len(results), "results": results}

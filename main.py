@@ -3,27 +3,23 @@ RLAIF Trading Pipeline — Main Entry Point
 
 Unified orchestrator that wires together multi-agent LLM analysis,
 foundation models, options analytics, execution, and RLAIF feedback.
-
-Usage:
-    python main.py                  # Quick status check
-    python main.py --help           # See CLI options (via src/cli.py)
-
-    from main import TradingPipeline
-    pipeline = TradingPipeline(mode='paper')
-    result = pipeline.analyze('AAPL')
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import time
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional dependency in local envs
+    def load_dotenv(*args, **kwargs):
+        return False
+
 
 load_dotenv()
 
@@ -34,15 +30,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.utils import load_config, get_config, setup_logging, get_logger, set_seed
+from src.utils import get_logger, get_settings, load_config, set_seed, setup_logging
 
 
-# ---------------------------------------------------------------------------
-# TradingPipeline
-# ---------------------------------------------------------------------------
 class TradingPipeline:
-    """Top-level orchestrator that initialises every subsystem and exposes
-    high-level actions: analyse, paper-trade, live-trade, backtest."""
+    """Top-level orchestrator for analysis, paper trading, and backtesting."""
 
     def __init__(
         self,
@@ -50,50 +42,77 @@ class TradingPipeline:
         mode: str = "paper",
         log_level: str = "INFO",
     ):
-        # ------ bootstrap ------
         self.mode = mode
         self.config = load_config(config_path)
+        setup_logging(log_level=log_level)
         self.logger = get_logger("pipeline")
-        setup_logging(level=log_level)
-        set_seed(self.config.get("rl", {}).get("ensemble", {}).get("agents", [{}])[0].get("seed", 42))
-        self.logger.info("Initialising TradingPipeline  mode=%s", mode)
 
-        # ------ LLM client (MLX local or Claude API) ------
+        seed = (
+            self.config.get("rl", {})
+            .get("ensemble", {})
+            .get("agents", [{}])[0]
+            .get("seed", 42)
+        )
+        set_seed(seed)
+
+        self.llm_client = None
+        self.data_client = None
+        self.preprocessor = None
+        self.tech_features = None
+        self.sent_features = None
+        self.fund_features = None
+        self.foundation_model = None
+        self.fundamental_analyst = None
+        self.sentiment_analyst = None
+        self.technical_analyst = None
+        self.risk_analyst = None
+        self.manager = None
+        self.rag = None
+        self.options_chains = None
+        self.greeks_calc = None
+        self.vol_surface = None
+        self.options_strategies = None
+        self.options_flow = None
+        self.options_analyst = None
+        self.broker = None
+        self.oms = None
+        self.risk_engine = None
+        self.alert_manager = None
+        self.preference_gen = None
+        self.reward_model = None
+        self.rlaif_finetuner = None
+        self.outcome_tracker = None
+        self.options_outcome_tracker = None
+        self.scheduler = None
+
+        self.logger.info("Initialising TradingPipeline mode=%s", mode)
+
         self._init_llm_client()
-
-        # ------ data layer ------
         self._init_data()
-
-        # ------ feature engines ------
         self._init_features()
-
-        # ------ foundation model (TimesFM / TTM) ------
         self._init_foundation_model()
-
-        # ------ multi-agent system ------
         self._init_agents()
-
-        # ------ options subsystem ------
         self._init_options()
-
-        # ------ execution layer ------
         self._init_execution()
-
-        # ------ RLAIF feedback loop ------
         self._init_rlaif()
-
-        # ------ scheduler ------
         self._init_scheduler()
 
-        self.logger.info("TradingPipeline ready.")
+        self.logger.info("TradingPipeline ready")
 
-    # -----------------------------------------------------------------------
-    # Initialisation helpers (each is a separate method so failures are clear)
-    # -----------------------------------------------------------------------
-    def _init_llm_client(self):
-        from src.agents import create_client, get_default_client
+    # ------------------------------------------------------------------
+    # Initialisation helpers
+    # ------------------------------------------------------------------
+    def _init_llm_client(self) -> None:
+        try:
+            from src.agents import create_client, get_default_client
+        except Exception as exc:
+            self.logger.warning("LLM client factory unavailable: %s", exc)
+            self.llm_client = None
+            return
 
-        backend = os.getenv("LLM_BACKEND", self.config.get("llm", {}).get("backend", "claude"))
+        backend = os.getenv(
+            "LLM_BACKEND", self.config.get("llm", {}).get("backend", "claude")
+        )
         llm_cfg = self.config.get("llm", {})
         try:
             self.llm_client = create_client(
@@ -102,104 +121,206 @@ class TradingPipeline:
                 temperature=llm_cfg.get("temperature", 0.7),
                 max_tokens=llm_cfg.get("max_tokens", 4096),
             )
-        except Exception:
-            self.logger.warning("create_client() failed — falling back to get_default_client()")
-            self.llm_client = get_default_client()
-        self.logger.info("LLM client: %s", type(self.llm_client).__name__)
+        except Exception as exc:
+            self.logger.warning(
+                "create_client() failed (%s) — trying get_default_client()", exc
+            )
+            try:
+                self.llm_client = get_default_client()
+            except Exception as inner_exc:
+                self.logger.warning("Default LLM client unavailable: %s", inner_exc)
+                self.llm_client = None
 
-    def _init_data(self):
-        from src.data import AlpacaDataClient, DataPreprocessor
+    def _init_data(self) -> None:
+        try:
+            from src.data import AlpacaDataClient, DataPreprocessor
+        except Exception as exc:
+            self.logger.warning("Data modules unavailable: %s", exc)
+            return
 
         data_cfg = self.config.get("data", {})
-        self.data_client = AlpacaDataClient(config=data_cfg)
-        self.preprocessor = DataPreprocessor(config=data_cfg.get("processing", {}))
-        self.logger.info("Data layer initialised (Alpaca + preprocessor)")
+        proc_cfg = data_cfg.get("processing", {})
 
-    def _init_features(self):
-        from src.features import TechnicalFeatureEngine, SentimentAnalyzer, FundamentalAnalyzer
+        try:
+            self.preprocessor = DataPreprocessor(
+                fill_method=proc_cfg.get("fill_method", "forward"),
+                outlier_threshold=proc_cfg.get("outlier_threshold", 5.0),
+                min_trading_days=proc_cfg.get("min_trading_days", 252),
+            )
+        except Exception as exc:
+            self.logger.warning("Preprocessor unavailable: %s", exc)
+            self.preprocessor = None
 
+        try:
+            settings = get_settings()
+            self.data_client = AlpacaDataClient(
+                api_key=settings.alpaca_api_key or None,
+                secret_key=settings.alpaca_secret_key or None,
+            )
+        except Exception as exc:
+            self.logger.warning("Market data client unavailable: %s", exc)
+            self.data_client = None
+
+    def _init_features(self) -> None:
         feat_cfg = self.config.get("features", {})
-        self.tech_features = TechnicalFeatureEngine(config=feat_cfg.get("technical", {}))
-        self.sent_features = SentimentAnalyzer(config=feat_cfg.get("sentiment", {}))
-        self.fund_features = FundamentalAnalyzer(config=feat_cfg.get("fundamental", {}))
-        self.logger.info("Feature engines ready (technical, sentiment, fundamental)")
 
-    def _init_foundation_model(self):
+        try:
+            from src.features import (
+                FundamentalAnalyzer,
+                SentimentAnalyzer,
+                TechnicalFeatureEngine,
+            )
+        except Exception as exc:
+            self.logger.warning("Feature modules unavailable: %s", exc)
+            return
+
+        try:
+            self.tech_features = TechnicalFeatureEngine(
+                config=feat_cfg.get("technical", {})
+            )
+        except Exception as exc:
+            self.logger.warning("Technical features unavailable: %s", exc)
+            self.tech_features = None
+
+        try:
+            sent_cfg = feat_cfg.get("sentiment", {})
+            self.sent_features = SentimentAnalyzer(
+                model_name=sent_cfg.get("model", "yiyanghkust/finbert-tone"),
+                batch_size=sent_cfg.get("batch_size", 32),
+                max_length=sent_cfg.get("max_length", 512),
+            )
+        except Exception as exc:
+            self.logger.warning("Sentiment features unavailable: %s", exc)
+            self.sent_features = None
+
+        try:
+            fund_cfg = feat_cfg.get("fundamental", {})
+            lookback_periods = fund_cfg.get("lookback_periods", 4)
+            self.fund_features = FundamentalAnalyzer(
+                lookback_periods=lookback_periods
+            )
+        except Exception as exc:
+            self.logger.warning("Fundamental features unavailable: %s", exc)
+            self.fund_features = None
+
+    def _init_foundation_model(self) -> None:
         fm_cfg = self.config.get("foundation_model", {})
         model_type = fm_cfg.get("model_type", "timesfm")
         try:
             if model_type == "ttm":
                 from src.models import TTMPredictor
-                self.foundation_model = TTMPredictor(config=fm_cfg.get("ttm", {}))
+
+                self.foundation_model = TTMPredictor(**fm_cfg.get("ttm", {}))
             else:
                 from src.models import TimesFMPredictor
-                self.foundation_model = TimesFMPredictor(config=fm_cfg.get("timesfm", {}))
+
+                self.foundation_model = TimesFMPredictor(**fm_cfg.get("timesfm", {}))
             self.logger.info("Foundation model loaded: %s", model_type)
         except Exception as exc:
-            self.logger.warning("Foundation model (%s) unavailable: %s", model_type, exc)
+            self.logger.warning("Foundation model unavailable: %s", exc)
             self.foundation_model = None
 
-    def _init_agents(self):
-        from src.agents import (
-            FundamentalAnalyst,
-            SentimentAnalyst,
-            TechnicalAnalyst,
-            RiskAnalyst,
-            ManagerAgent,
-            RAGSystem,
-        )
+    def _init_agents(self) -> None:
+        try:
+            from src.agents import (
+                FundamentalAnalyst,
+                ManagerAgent,
+                RAGSystem,
+                RiskAnalyst,
+                SentimentAnalyst,
+                TechnicalAnalyst,
+            )
+        except Exception as exc:
+            self.logger.warning("Agent modules unavailable: %s", exc)
+            return
 
         agent_cfg = self.config.get("llm", {}).get("agents", {})
 
-        self.fundamental_analyst = FundamentalAnalyst(
+        self.fundamental_analyst = self._try_construct(
+            FundamentalAnalyst,
+            "fundamental analyst",
             llm_client=self.llm_client,
             config=agent_cfg.get("fundamental_analyst", {}),
         )
-        self.sentiment_analyst = SentimentAnalyst(
+        self.sentiment_analyst = self._try_construct(
+            SentimentAnalyst,
+            "sentiment analyst",
             llm_client=self.llm_client,
             config=agent_cfg.get("sentiment_analyst", {}),
         )
-        self.technical_analyst = TechnicalAnalyst(
+        self.technical_analyst = self._try_construct(
+            TechnicalAnalyst,
+            "technical analyst",
             llm_client=self.llm_client,
             config=agent_cfg.get("technical_analyst", {}),
         )
-        self.risk_analyst = RiskAnalyst(
+        self.risk_analyst = self._try_construct(
+            RiskAnalyst,
+            "risk analyst",
             llm_client=self.llm_client,
             config=agent_cfg.get("risk_analyst", {}),
         )
-        self.manager = ManagerAgent(
+        self.manager = self._try_construct(
+            ManagerAgent,
+            "manager agent",
             llm_client=self.llm_client,
             config=agent_cfg.get("manager", {}),
         )
 
-        # RAG system (optional)
         rag_cfg = self.config.get("llm", {}).get("rag", {})
         if rag_cfg.get("enabled", False):
-            try:
-                self.rag = RAGSystem(config=rag_cfg)
-                self.logger.info("RAG system enabled")
-            except Exception as exc:
-                self.logger.warning("RAG init failed: %s", exc)
-                self.rag = None
-        else:
-            self.rag = None
+            self.rag = self._try_construct(RAGSystem, "RAG system", config=rag_cfg)
 
-        self.logger.info("Multi-agent system ready (5 analysts + manager)")
+    def _init_options(self) -> None:
+        try:
+            from src.options import (
+                GreeksCalculator,
+                IVSForecaster,
+                OptionsAnalyst,
+                OptionsChainManager,
+                OptionsFlowAnalyzer,
+                OptionsStrategyBuilder,
+                VolatilitySurface,
+            )
+        except Exception as exc:
+            self.logger.warning("Options modules unavailable: %s", exc)
+            return
 
-    def _init_options(self):
-        from src.options.chains import OptionsChainManager
-        from src.options.greeks import GreeksCalculator
-        from src.options.vol_surface import VolatilitySurface
-        from src.options.strategies import OptionsStrategyBuilder
-        from src.options.flow_analyzer import OptionsFlowAnalyzer
-        from src.options.options_analyst import OptionsAnalyst
-
-        self.options_chains = OptionsChainManager()
-        self.greeks_calc = GreeksCalculator()
-        self.vol_surface = VolatilitySurface()
-        self.options_strategies = OptionsStrategyBuilder()
-        self.options_flow = OptionsFlowAnalyzer()
-        self.options_analyst = OptionsAnalyst(
+        self.options_chains = self._try_construct(
+            OptionsChainManager,
+            "options chain manager",
+            backend="yfinance",
+        )
+        self.greeks_calc = self._try_construct(
+            GreeksCalculator,
+            "greeks calculator",
+        )
+        self.vol_surface = self._try_construct(
+            VolatilitySurface,
+            "volatility surface",
+            chains_provider=self.options_chains,
+            greeks_provider=self.greeks_calc,
+            history_provider=self.data_client,
+        )
+        self.options_strategies = self._try_construct(
+            OptionsStrategyBuilder,
+            "options strategy builder",
+            chains_provider=self.options_chains,
+            greeks_provider=self.greeks_calc,
+        )
+        self.options_flow = self._try_construct(
+            OptionsFlowAnalyzer,
+            "options flow analyzer",
+            chain_manager=self.options_chains,
+            greeks_calculator=self.greeks_calc,
+        )
+        self.ivs_forecaster = self._try_construct(
+            IVSForecaster,
+            "IVS forecaster",
+        )
+        self.options_analyst = self._try_construct(
+            OptionsAnalyst,
+            "options analyst",
             llm_client=self.llm_client,
             chain_manager=self.options_chains,
             greeks_calculator=self.greeks_calc,
@@ -207,92 +328,372 @@ class TradingPipeline:
             strategy_builder=self.options_strategies,
             flow_analyzer=self.options_flow,
         )
-        self.logger.info("Options subsystem ready")
 
-    def _init_execution(self):
-        from src.execution import (
-            AlpacaBroker,
-            TradierBroker,
-            PaperBroker,
-            OrderManagementSystem,
-        )
-        from src.execution.risk_engine import RiskEngine
-        from src.execution.alerts import AlertManager
-        from src.execution.scheduler import TradingScheduler
+    def _init_execution(self) -> None:
+        try:
+            from src.execution import (
+                AlpacaBroker,
+                OrderManagementSystem,
+                PaperBroker,
+                TradierBroker,
+            )
+            from src.execution.alerts import AlertManager
+            from src.execution.risk_engine import RiskEngine
+        except Exception as exc:
+            self.logger.warning("Execution modules unavailable: %s", exc)
+            return
 
         env_cfg = self.config.get("environment", {})
+        settings = None
+        try:
+            settings = get_settings()
+        except Exception:
+            settings = None
 
-        # Select broker
-        if self.mode == "live":
-            broker_name = os.getenv("BROKER", "alpaca")
-            if broker_name == "tradier":
-                self.broker = TradierBroker()
+        try:
+            if self.mode == "live":
+                broker_name = os.getenv("BROKER", "alpaca")
+                if broker_name == "tradier":
+                    self.broker = TradierBroker()
+                else:
+                    api_key = os.getenv("ALPACA_API_KEY") or getattr(
+                        settings, "alpaca_api_key", None
+                    )
+                    secret_key = os.getenv("ALPACA_SECRET_KEY") or getattr(
+                        settings, "alpaca_secret_key", None
+                    )
+                    self.broker = AlpacaBroker(
+                        api_key=api_key,
+                        secret_key=secret_key,
+                        paper=False,
+                    )
             else:
-                self.broker = AlpacaBroker()
-        else:
-            self.broker = PaperBroker(
-                initial_balance=env_cfg.get("initial_balance", 100_000),
+                self.broker = PaperBroker(
+                    initial_cash=env_cfg.get("initial_balance", 100_000)
+                )
+        except Exception as exc:
+            self.logger.warning("Broker unavailable: %s", exc)
+            self.broker = None
+
+        self.risk_engine = self._try_construct(
+            RiskEngine,
+            "risk engine",
+            config=env_cfg,
+        )
+        self.oms = self._try_construct(
+            OrderManagementSystem,
+            "order management system",
+            broker=self.broker,
+            risk_engine=self.risk_engine,
+        )
+        self.alert_manager = self._try_construct(
+            AlertManager,
+            "alert manager",
+        )
+
+    def _init_rlaif(self) -> None:
+        rlaif_cfg = self.config.get("rlaif", {})
+        base_storage = Path(rlaif_cfg.get("storage_path", "./data/rlaif"))
+        base_storage.mkdir(parents=True, exist_ok=True)
+
+        try:
+            from src.rlaif.preference_generator import PreferenceGenerator
+        except Exception as exc:
+            self.logger.warning("Preference generator unavailable: %s", exc)
+            self.preference_gen = None
+            self.preference_generator = None
+            self.outcome_tracker = None
+            self.options_outcome_tracker = None
+            self.reward_model = None
+            self.rlaif_finetuner = None
+            return
+
+        preferences_cfg = rlaif_cfg.get("preferences", {})
+        self.preference_gen = self._try_construct(
+            PreferenceGenerator,
+            "preference generator",
+            storage_path=base_storage,
+            min_preference_margin=preferences_cfg.get("min_preference_margin", 0.05),
+            hold_period_days=preferences_cfg.get("hold_period_days", 5),
+        )
+        self.preference_generator = self.preference_gen
+
+        try:
+            from src.rlaif.outcome_tracker import OutcomeTracker
+        except Exception as exc:
+            self.logger.warning("Outcome tracker unavailable: %s", exc)
+            OutcomeTracker = None
+
+        try:
+            from src.rlaif.options_outcome_tracker import OptionsOutcomeTracker
+        except Exception as exc:
+            self.logger.warning("Options outcome tracker unavailable: %s", exc)
+            OptionsOutcomeTracker = None
+
+        feedback_cfg = rlaif_cfg.get("feedback", {})
+        self.outcome_tracker = None
+        if OutcomeTracker is not None and self.preference_gen is not None and self.data_client is not None:
+            self.outcome_tracker = self._try_construct(
+                OutcomeTracker,
+                "outcome tracker",
+                preference_generator=self.preference_gen,
+                data_client=self.data_client,
+                storage_path=base_storage / "positions",
+                update_interval_seconds=feedback_cfg.get("update_interval_seconds", 60),
+                auto_close_after_days=feedback_cfg.get("auto_close_after_days", 5),
             )
 
-        self.oms = OrderManagementSystem(broker=self.broker)
-        self.risk_engine = RiskEngine(config=env_cfg)
-        self.alert_manager = AlertManager()
-        self.logger.info("Execution layer ready  broker=%s", type(self.broker).__name__)
+        self.options_outcome_tracker = None
+        if OptionsOutcomeTracker is not None and self.preference_gen is not None:
+            self.options_outcome_tracker = self._try_construct(
+                OptionsOutcomeTracker,
+                "options outcome tracker",
+                preference_generator=self.preference_gen,
+                storage_path=base_storage / "options_outcomes",
+            )
 
-    def _init_rlaif(self):
-        from src.rlaif import PreferenceGenerator, RewardModel, RLAIFFineTuner, OutcomeTracker
-        from src.rlaif.options_outcome_tracker import OptionsOutcomeTracker
+        self.reward_model = None
+        self.rlaif_finetuner = None
 
-        rlaif_cfg = self.config.get("rlaif", {})
-        self.preference_gen = PreferenceGenerator(config=rlaif_cfg.get("preferences", {}))
-        self.reward_model = RewardModel(config=rlaif_cfg.get("reward_model", {}))
-        self.rlaif_finetuner = RLAIFFineTuner(config=rlaif_cfg.get("fine_tuning", {}))
-        self.outcome_tracker = OutcomeTracker(config=rlaif_cfg.get("feedback", {}))
-        self.options_outcome_tracker = OptionsOutcomeTracker()
-        self.logger.info("RLAIF feedback loop initialised")
+    def _init_scheduler(self) -> None:
+        try:
+            from src.execution.scheduler import TradingScheduler
+        except Exception as exc:
+            self.logger.warning("Scheduler unavailable: %s", exc)
+            return
 
-    def _init_scheduler(self):
-        from src.execution.scheduler import TradingScheduler
+        scheduler_cfg = self.config.get("scheduler", {})
+        scheduler_cfg.setdefault("symbols", self.config.get("data", {}).get("assets", []))
+        scheduler_cfg.setdefault("dry_run", self.mode != "live")
 
-        self.scheduler = TradingScheduler()
-        self.logger.info("Scheduler initialised")
+        self.scheduler = self._try_construct(
+            TradingScheduler,
+            "trading scheduler",
+            config=scheduler_cfg,
+            pipeline=self,
+            oms=self.oms,
+            risk_engine=self.risk_engine,
+            alert_manager=self.alert_manager,
+        )
 
-    # -----------------------------------------------------------------------
-    # Public API
-    # -----------------------------------------------------------------------
-    def analyze(self, symbol: str) -> Dict[str, Any]:
-        """Run full multi-agent analysis pipeline on *symbol*.
+    # ------------------------------------------------------------------
+    # Internal utility helpers
+    # ------------------------------------------------------------------
+    def _try_construct(self, cls, label: str, **kwargs):
+        try:
+            return cls(**kwargs)
+        except Exception as exc:
+            self.logger.warning("%s unavailable: %s", label, exc)
+            return None
 
-        Returns a dict with keys: symbol, timestamp, agents (per-agent output),
-        manager_decision, foundation_forecast, features, recommended_trades.
-        """
-        self.logger.info("Analysing %s ...", symbol)
-        t0 = time.time()
+    def _safe_call(self, obj: Any, method_names: List[str], *args, **kwargs):
+        if obj is None:
+            return None
+        for method_name in method_names:
+            method = getattr(obj, method_name, None)
+            if callable(method):
+                return method(*args, **kwargs)
+        raise AttributeError(
+            f"{type(obj).__name__} has none of the methods {method_names}"
+        )
 
-        # 1) Fetch raw data
-        raw_data = self.data_client.get_bars(symbol)
-        processed = self.preprocessor.process(raw_data)
+    def _fetch_market_data(self, symbol: str):
+        if self.data_client is None:
+            raise RuntimeError("market data client is unavailable")
 
-        # 2) Compute features
-        tech_feats = self.tech_features.compute(processed)
-        sent_feats = self.sent_features.compute(symbol)
-        fund_feats = self.fund_features.compute(symbol)
+        data_cfg = self.config.get("data", {})
+        interval = (
+            data_cfg.get("sources", {})
+            .get("market_data", {})
+            .get("bar_interval", "1Day")
+        )
+        lookback_days = (
+            data_cfg.get("sources", {})
+            .get("market_data", {})
+            .get("lookback_days", 365)
+        )
 
-        features = {
-            "technical": tech_feats,
-            "sentiment": sent_feats,
-            "fundamental": fund_feats,
+        if hasattr(self.data_client, "download_latest"):
+            return self.data_client.download_latest(
+                symbols=symbol,
+                days=lookback_days,
+                timeframe=interval,
+                use_cache=True,
+            )
+
+        if hasattr(self.data_client, "get_bars"):
+            return self.data_client.get_bars(symbol)
+
+        raise AttributeError(
+            f"Unsupported market data client: {type(self.data_client).__name__}"
+        )
+
+    def _preprocess_market_data(self, raw_data, symbol: str):
+        if self.preprocessor is None:
+            return raw_data
+
+        try:
+            return self._safe_call(
+                self.preprocessor,
+                ["preprocess", "process"],
+                raw_data,
+                symbol=symbol,
+            )
+        except TypeError:
+            return self._safe_call(
+                self.preprocessor,
+                ["preprocess", "process"],
+                raw_data,
+            )
+
+    def _compute_technical_features(self, processed) -> Dict[str, Any]:
+        if self.tech_features is None:
+            return {"status": "unavailable", "reason": "technical engine not loaded"}
+
+        try:
+            result = self._safe_call(self.tech_features, ["compute_all", "compute"], processed)
+            if hasattr(result, "tail"):
+                return {
+                    "status": "ok",
+                    "columns": list(result.columns),
+                    "latest": result.tail(1).to_dict(orient="records")[0],
+                }
+            return {"status": "ok", "value": result}
+        except Exception as exc:
+            return {"status": "error", "reason": str(exc)}
+
+    def _compute_sentiment_features(self, symbol: str) -> Dict[str, Any]:
+        if self.sent_features is None:
+            return {"status": "unavailable", "reason": "sentiment engine not loaded"}
+
+        if hasattr(self.sent_features, "compute"):
+            try:
+                return {"status": "ok", "value": self.sent_features.compute(symbol)}
+            except Exception as exc:
+                return {"status": "error", "reason": str(exc)}
+
+        return {
+            "status": "unavailable",
+            "reason": "pipeline does not yet wire news text into sentiment analyzer",
         }
 
-        # 3) Foundation model forecast
-        forecast = None
-        if self.foundation_model is not None:
-            try:
-                forecast = self.foundation_model.predict(processed)
-            except Exception as exc:
-                self.logger.warning("Foundation model forecast failed: %s", exc)
+    def _compute_fundamental_features(self, symbol: str) -> Dict[str, Any]:
+        if self.fund_features is None:
+            return {
+                "status": "unavailable",
+                "reason": "fundamental engine not loaded",
+            }
 
-        # 4) Run agents (concurrently where possible)
+        if hasattr(self.fund_features, "compute"):
+            try:
+                return {"status": "ok", "value": self.fund_features.compute(symbol)}
+            except Exception as exc:
+                return {"status": "error", "reason": str(exc)}
+
+        return {
+            "status": "unavailable",
+            "reason": "pipeline does not yet wire financial statement data into fundamental analyzer",
+        }
+
+    def _run_foundation_forecast(self, processed):
+        if self.foundation_model is None:
+            return None
+        try:
+            return self._safe_call(self.foundation_model, ["predict"], processed)
+        except Exception as exc:
+            self.logger.warning("Foundation model forecast failed: %s", exc)
+            return None
+
+    def _run_agent(self, agent: Any, context: Dict[str, Any]):
+        if agent is None:
+            return {"status": "unavailable"}
+        try:
+            return self._safe_call(agent, ["analyze", "run"], context)
+        except Exception as exc:
+            self.logger.warning("Agent %s failed: %s", type(agent).__name__, exc)
+            return {"error": str(exc)}
+
+    def _run_manager(self, agent_results: Dict[str, Any], context: Dict[str, Any]):
+        if self.manager is None:
+            return {
+                "decision": "hold",
+                "confidence": 0.0,
+                "reasoning": "manager agent unavailable",
+                "trades": [],
+            }
+
+        try:
+            if hasattr(self.manager, "synthesize"):
+                return self.manager.synthesize(
+                    agent_results=agent_results,
+                    context=context,
+                )
+            if hasattr(self.manager, "analyze"):
+                mgr_context = dict(context)
+                mgr_context["agent_results"] = agent_results
+                return self.manager.analyze(mgr_context)
+        except Exception as exc:
+            self.logger.warning("Manager synthesis failed: %s", exc)
+            return {"error": str(exc), "trades": []}
+
+        return {"error": "manager has no supported entrypoint", "trades": []}
+
+    def _get_options_chain(self, symbol: str):
+        if self.options_chains is None:
+            raise RuntimeError("options chain manager unavailable")
+
+        expirations = []
+        if hasattr(self.options_chains, "get_expirations"):
+            expirations = self.options_chains.get_expirations(symbol)
+        expiration = expirations[0] if expirations else None
+
+        if hasattr(self.options_chains, "fetch_chain"):
+            return self.options_chains.fetch_chain(symbol, expiration=expiration)
+        if hasattr(self.options_chains, "get_chain"):
+            if expiration is not None:
+                return self.options_chains.get_chain(symbol, expiration)
+            return self.options_chains.get_chain(symbol)
+
+        raise AttributeError(
+            f"Unsupported options chain manager: {type(self.options_chains).__name__}"
+        )
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def analyze(self, symbol: str) -> Dict[str, Any]:
+        self.logger.info("Analysing %s", symbol)
+        started = time.time()
+
+        base_result: Dict[str, Any] = {
+            "symbol": symbol,
+            "timestamp": datetime.utcnow().isoformat(),
+            "elapsed_seconds": 0.0,
+            "features": {},
+            "foundation_forecast": None,
+            "agents": {},
+            "manager_decision": {"decision": "hold", "trades": []},
+            "recommended_trades": [],
+        }
+
+        try:
+            raw_data = self._fetch_market_data(symbol)
+            processed = self._preprocess_market_data(raw_data, symbol)
+        except Exception as exc:
+            base_result["manager_decision"] = {
+                "error": f"market data unavailable: {exc}",
+                "trades": [],
+            }
+            base_result["elapsed_seconds"] = round(time.time() - started, 2)
+            return base_result
+
+        features = {
+            "technical": self._compute_technical_features(processed),
+            "sentiment": self._compute_sentiment_features(symbol),
+            "fundamental": self._compute_fundamental_features(symbol),
+        }
+        forecast = self._run_foundation_forecast(processed)
+
         context = {
             "symbol": symbol,
             "features": features,
@@ -300,94 +701,114 @@ class TradingPipeline:
             "price_data": processed,
         }
 
-        agent_results = {}
-        for name, agent in [
-            ("fundamental", self.fundamental_analyst),
-            ("sentiment", self.sentiment_analyst),
-            ("technical", self.technical_analyst),
-            ("risk", self.risk_analyst),
-        ]:
-            try:
-                agent_results[name] = agent.analyze(context)
-            except Exception as exc:
-                self.logger.error("Agent %s failed: %s", name, exc)
-                agent_results[name] = {"error": str(exc)}
-
-        # Options analyst
-        try:
-            agent_results["options"] = self.options_analyst.analyze(context)
-        except Exception as exc:
-            self.logger.warning("Options analyst failed: %s", exc)
-            agent_results["options"] = {"error": str(exc)}
-
-        # 5) Manager synthesis
-        try:
-            manager_decision = self.manager.synthesize(
-                agent_results=agent_results,
-                context=context,
-            )
-        except Exception as exc:
-            self.logger.error("Manager synthesis failed: %s", exc)
-            manager_decision = {"error": str(exc)}
-
-        elapsed = time.time() - t0
-        self.logger.info("Analysis for %s completed in %.1fs", symbol, elapsed)
-
-        return {
-            "symbol": symbol,
-            "timestamp": datetime.utcnow().isoformat(),
-            "elapsed_seconds": round(elapsed, 2),
-            "features": features,
-            "foundation_forecast": forecast,
-            "agents": agent_results,
-            "manager_decision": manager_decision,
-            "recommended_trades": manager_decision.get("trades", []) if isinstance(manager_decision, dict) else [],
+        agent_results = {
+            "fundamental": self._run_agent(self.fundamental_analyst, context),
+            "sentiment": self._run_agent(self.sentiment_analyst, context),
+            "technical": self._run_agent(self.technical_analyst, context),
+            "risk": self._run_agent(self.risk_analyst, context),
         }
+
+        if self.options_analyst is not None:
+            agent_results["options"] = self._run_agent(self.options_analyst, context)
+        else:
+            agent_results["options"] = {"status": "unavailable"}
+
+        manager_decision = self._run_manager(agent_results, context)
+
+        base_result.update(
+            {
+                "elapsed_seconds": round(time.time() - started, 2),
+                "features": features,
+                "foundation_forecast": forecast,
+                "agents": agent_results,
+                "manager_decision": manager_decision,
+                "recommended_trades": (
+                    manager_decision.get("trades", [])
+                    if isinstance(manager_decision, dict)
+                    else []
+                ),
+            }
+        )
+        return base_result
 
     def analyze_options(self, symbol: str) -> Dict[str, Any]:
-        """Options-focused analysis: vol surface, unusual flow, strategy recs."""
-        self.logger.info("Options analysis for %s ...", symbol)
+        self.logger.info("Options analysis for %s", symbol)
 
-        chain = self.options_chains.get_chain(symbol)
-        greeks = self.greeks_calc.compute(chain)
-        vol_surf = self.vol_surface.build(chain)
-        flow = self.options_flow.analyze(symbol)
-        strategies = self.options_strategies.recommend(
-            symbol=symbol,
-            chain=chain,
-            vol_surface=vol_surf,
-        )
-
-        return {
+        result: Dict[str, Any] = {
             "symbol": symbol,
             "timestamp": datetime.utcnow().isoformat(),
-            "chain_summary": chain,
-            "greeks": greeks,
-            "vol_surface": vol_surf,
-            "unusual_flow": flow,
-            "recommended_strategies": strategies,
+            "chain_summary": None,
+            "greeks": None,
+            "vol_surface": None,
+            "unusual_flow": [],
+            "recommended_strategies": [],
         }
 
+        try:
+            chain = self._get_options_chain(symbol)
+            result["chain_summary"] = chain
+        except Exception as exc:
+            result["error"] = f"options data unavailable: {exc}"
+            return result
+
+        try:
+            if self.greeks_calc is not None:
+                if hasattr(self.greeks_calc, "compute"):
+                    result["greeks"] = self.greeks_calc.compute(chain)
+                elif hasattr(self.greeks_calc, "compute_greeks"):
+                    result["greeks"] = {"status": "manual_api_required"}
+        except Exception as exc:
+            result["greeks"] = {"error": str(exc)}
+
+        try:
+            if self.vol_surface is not None:
+                if hasattr(self.vol_surface, "build_surface"):
+                    result["vol_surface"] = self.vol_surface.build_surface(symbol)
+                elif hasattr(self.vol_surface, "build"):
+                    result["vol_surface"] = self.vol_surface.build(chain)
+        except Exception as exc:
+            result["vol_surface"] = {"error": str(exc)}
+
+        try:
+            if self.options_flow is not None:
+                if hasattr(self.options_flow, "detect_unusual_activity"):
+                    result["unusual_flow"] = self.options_flow.detect_unusual_activity(symbol)
+                elif hasattr(self.options_flow, "analyze"):
+                    result["unusual_flow"] = self.options_flow.analyze(symbol)
+        except Exception as exc:
+            result["unusual_flow"] = [{"error": str(exc)}]
+
+        try:
+            if self.options_strategies is not None and hasattr(
+                self.options_strategies, "recommend"
+            ):
+                result["recommended_strategies"] = self.options_strategies.recommend(
+                    symbol=symbol,
+                    chain=chain,
+                    vol_surface=result.get("vol_surface"),
+                )
+        except Exception as exc:
+            result["recommended_strategies"] = [{"error": str(exc)}]
+
+        return result
+
     def run_paper(self):
-        """Start paper-trading loop driven by the scheduler."""
-        self.logger.info("Starting PAPER trading …")
-        if self.mode != "paper":
-            self.logger.warning("Pipeline was not initialised in paper mode — switching broker to PaperBroker")
-            from src.execution import PaperBroker
-            env_cfg = self.config.get("environment", {})
-            self.broker = PaperBroker(initial_balance=env_cfg.get("initial_balance", 100_000))
+        self.logger.info("Starting PAPER trading")
+        if self.scheduler is None:
+            raise RuntimeError("scheduler unavailable")
 
         assets = self.config.get("data", {}).get("assets", [])
         self.scheduler.start(pipeline=self, symbols=assets, mode="paper")
 
     def run_live(self):
-        """Start live trading (requires explicit confirmation)."""
-        self.logger.info("Starting LIVE trading …")
+        self.logger.info("Starting LIVE trading")
         if self.mode != "live":
             raise RuntimeError(
-                "Pipeline must be initialised with mode='live' to trade live. "
-                "Re-create with TradingPipeline(mode='live')."
+                "Pipeline must be initialised with mode='live' to trade live"
             )
+        if self.scheduler is None:
+            raise RuntimeError("scheduler unavailable")
+
         assets = self.config.get("data", {}).get("assets", [])
         self.scheduler.start(pipeline=self, symbols=assets, mode="live")
 
@@ -397,20 +818,11 @@ class TradingPipeline:
         end_date: str,
         symbols: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Run a backtest over [start_date, end_date].
-
-        Parameters
-        ----------
-        start_date : str  e.g. "2023-01-01"
-        end_date   : str  e.g. "2024-01-01"
-        symbols    : list of tickers (defaults to config asset universe)
-
-        Returns a dict with equity curve, metrics, and trade log.
-        """
         symbols = symbols or self.config.get("data", {}).get("assets", [])
-        self.logger.info("Backtesting %s → %s on %d symbols", start_date, end_date, len(symbols))
+        self.logger.info(
+            "Backtesting %s → %s on %d symbols", start_date, end_date, len(symbols)
+        )
 
-        bt_cfg = self.config.get("backtesting", {})
         results: Dict[str, Any] = {
             "start_date": start_date,
             "end_date": end_date,
@@ -420,88 +832,169 @@ class TradingPipeline:
             "metrics": {},
         }
 
-        # Fetch historical data for each symbol
+        if self.data_client is None or self.preprocessor is None:
+            results["error"] = "market data stack unavailable"
+            return results
+
+        try:
+            from src.backtesting.runner import run_benchmark_backtest
+
+            cost_cfg = self.config.get("backtesting", {}).get("costs", {})
+            return run_benchmark_backtest(
+                data_client=self.data_client,
+                preprocessor=self.preprocessor,
+                technical_engine=self.tech_features,
+                symbols=symbols,
+                start_date=start_date,
+                end_date=end_date,
+                timeframe="1Day",
+                commission_bps=float(cost_cfg.get("commission_bps", 0.0) or 0.0),
+                slippage_bps=float(cost_cfg.get("slippage_bps", 0.0) or 0.0),
+            )
+        except Exception as exc:
+            self.logger.warning("Benchmark backtest unavailable, falling back: %s", exc)
+
+        errors = 0
+        buy_signals = 0
+        sell_signals = 0
+        hold_signals = 0
+
         for sym in symbols:
             try:
-                hist = self.data_client.get_bars(sym, start=start_date, end=end_date)
-                processed = self.preprocessor.process(hist)
+                if hasattr(self.data_client, "download_bars"):
+                    hist = self.data_client.download_bars(
+                        symbols=sym,
+                        start=start_date,
+                        end=end_date,
+                        timeframe="1Day",
+                    )
+                elif hasattr(self.data_client, "get_bars"):
+                    hist = self.data_client.get_bars(sym, start=start_date, end=end_date)
+                else:
+                    raise AttributeError("unsupported market data client API")
+
+                processed = self._preprocess_market_data(hist, sym)
                 analysis = self.analyze(sym)
+                manager = analysis.get("manager_decision", {})
+                decision = str(
+                    manager.get("action") or manager.get("decision") or "hold"
+                ).lower()
+                if decision in {"buy", "long"}:
+                    buy_signals += 1
+                elif decision in {"sell", "short"}:
+                    sell_signals += 1
+                else:
+                    hold_signals += 1
+
                 results["trades"].append(
-                    {"symbol": sym, "analysis": analysis}
+                    {
+                        "symbol": sym,
+                        "rows": len(processed),
+                        "decision": decision,
+                        "analysis": analysis,
+                    }
                 )
             except Exception as exc:
-                self.logger.error("Backtest error on %s: %s", sym, exc)
+                errors += 1
+                self.logger.warning("Backtest error on %s: %s", sym, exc)
+                results["trades"].append({"symbol": sym, "error": str(exc)})
 
-        self.logger.info("Backtest complete — %d symbol(s) processed", len(results["trades"]))
+        total = len(symbols)
+        results["metrics"] = {
+            "symbols_processed": total,
+            "buy_signals": buy_signals,
+            "sell_signals": sell_signals,
+            "hold_signals": hold_signals,
+            "error_count": errors,
+            "success_rate": round((total - errors) / total, 4) if total else 0.0,
+        }
         return results
 
     def status(self) -> Dict[str, Any]:
-        """Return a snapshot of system health and component status."""
         info: Dict[str, Any] = {
             "mode": self.mode,
             "timestamp": datetime.utcnow().isoformat(),
-            "llm_client": type(self.llm_client).__name__,
+            "llm_client": type(self.llm_client).__name__ if self.llm_client else "unavailable",
             "foundation_model": (
                 type(self.foundation_model).__name__
-                if self.foundation_model
+                if self.foundation_model is not None
                 else "unavailable"
             ),
-            "broker": type(self.broker).__name__,
+            "broker": type(self.broker).__name__ if self.broker else "unavailable",
             "rag_enabled": self.rag is not None,
             "rlaif_enabled": self.config.get("rlaif", {}).get("enabled", False),
             "asset_universe": self.config.get("data", {}).get("assets", []),
             "agents": [
-                "FundamentalAnalyst",
-                "SentimentAnalyst",
-                "TechnicalAnalyst",
-                "RiskAnalyst",
-                "OptionsAnalyst",
-                "ManagerAgent",
+                name
+                for name, agent in [
+                    ("FundamentalAnalyst", self.fundamental_analyst),
+                    ("SentimentAnalyst", self.sentiment_analyst),
+                    ("TechnicalAnalyst", self.technical_analyst),
+                    ("RiskAnalyst", self.risk_analyst),
+                    ("OptionsAnalyst", self.options_analyst),
+                    ("ManagerAgent", self.manager),
+                ]
+                if agent is not None
             ],
+            "components": {
+                "data_client": self.data_client is not None,
+                "preprocessor": self.preprocessor is not None,
+                "technical_features": self.tech_features is not None,
+                "sentiment_features": self.sent_features is not None,
+                "fundamental_features": self.fund_features is not None,
+                "scheduler": self.scheduler is not None,
+            },
         }
 
-        # Broker connectivity
         try:
-            info["broker_connected"] = self.broker.is_connected() if hasattr(self.broker, "is_connected") else True
+            info["broker_connected"] = (
+                self.broker.is_connected() if hasattr(self.broker, "is_connected") else False
+            )
         except Exception:
             info["broker_connected"] = False
 
-        # Risk engine state
         try:
-            info["risk_state"] = self.risk_engine.status() if hasattr(self.risk_engine, "status") else "ok"
+            info["risk_state"] = (
+                self.risk_engine.status() if hasattr(self.risk_engine, "status") else "ok"
+            )
         except Exception:
             info["risk_state"] = "unknown"
 
         return info
 
     def kill(self):
-        """Emergency kill switch — cancel all orders, flatten positions."""
-        self.logger.critical("KILL SWITCH ACTIVATED — liquidating all positions")
-        try:
-            self.oms.cancel_all()
-        except Exception as exc:
-            self.logger.error("cancel_all failed: %s", exc)
-        try:
-            self.broker.flatten_all()
-        except Exception as exc:
-            self.logger.error("flatten_all failed: %s", exc)
-        try:
-            self.scheduler.stop()
-        except Exception as exc:
-            self.logger.error("scheduler stop failed: %s", exc)
-        self.alert_manager.send(
-            level="critical",
-            message="KILL SWITCH — all orders cancelled, positions flattened",
-        )
-        self.logger.critical("Kill switch complete.")
+        self.logger.critical("KILL SWITCH ACTIVATED")
+
+        if self.oms is not None and hasattr(self.oms, "cancel_all"):
+            try:
+                self.oms.cancel_all()
+            except Exception as exc:
+                self.logger.error("cancel_all failed: %s", exc)
+
+        if self.broker is not None and hasattr(self.broker, "flatten_all"):
+            try:
+                self.broker.flatten_all()
+            except Exception as exc:
+                self.logger.error("flatten_all failed: %s", exc)
+
+        if self.scheduler is not None and hasattr(self.scheduler, "stop"):
+            try:
+                self.scheduler.stop()
+            except Exception as exc:
+                self.logger.error("scheduler stop failed: %s", exc)
+
+        if self.alert_manager is not None and hasattr(self.alert_manager, "send"):
+            try:
+                self.alert_manager.send(
+                    level="critical",
+                    message="KILL SWITCH — all orders cancelled, positions flattened",
+                )
+            except Exception as exc:
+                self.logger.error("alert send failed: %s", exc)
 
 
-# ---------------------------------------------------------------------------
-# Quick start
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import json
 
     pipeline = TradingPipeline()
-    st = pipeline.status()
-    print(json.dumps(st, indent=2, default=str))
+    print(json.dumps(pipeline.status(), indent=2, default=str))

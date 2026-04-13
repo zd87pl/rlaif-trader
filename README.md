@@ -40,70 +40,74 @@ Data Ingestion → Feature Engineering → Foundation Models
 ### Prerequisites
 
 - Python 3.11+
-- CUDA-compatible GPU (recommended) or Apple Silicon
-- Anthropic API key
-- Alpaca API key (free tier available)
+- macOS or Linux
+- Anthropic API key for cloud LLM features (optional for smoke tests)
+- Alpaca API key for live market data and brokerage features (optional for smoke tests)
 
-### Installation
+### One-command local setup
 
-1. **Clone the repository**
+1. Clone the repository
 ```bash
 git clone https://github.com/yourusername/rlaif-trading.git
 cd rlaif-trading
 ```
 
-2. **Create virtual environment**
+2. Run the setup script
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+./setup.sh --minimal
 ```
 
-3. **Install dependencies**
+For a broader install including cloud LLM and monitoring dependencies:
 ```bash
-pip install -e .
+./setup.sh --full
 ```
 
-For GPU support with FAISS:
+For Apple Silicon local MLX support too:
 ```bash
-pip install -e ".[gpu]"
+./setup.sh --full --apple-local
 ```
 
-For development tools:
+3. Activate the virtual environment
 ```bash
-pip install -e ".[dev]"
+source .venv/bin/activate
 ```
 
-4. **Set up environment variables**
+4. Fill in `.env` if you want real APIs
 ```bash
-cp .env.example .env
-# Edit .env with your API keys
+cp .env.example .env  # only needed if setup script did not create it
+$EDITOR .env
 ```
 
-5. **Download sample data**
+### Working commands in this repo
+
+Check system status:
 ```bash
-python scripts/download_data.py --assets AAPL,MSFT,GOOGL --days 365
+python -m src.cli status
 ```
 
-### Basic Usage
-
-**1. Train a model**
+Run pipeline smoke tests:
 ```bash
-python scripts/train.py --config configs/config.yaml --assets AAPL,MSFT
+python -m pytest tests/test_pipeline.py -q -o addopts=''
 ```
 
-**2. Run backtesting**
+Run the options quickstart demo:
 ```bash
-python scripts/backtest.py --config configs/config.yaml --start 2023-01-01 --end 2024-01-01
+python scripts/quickstart.py --symbol SPY
 ```
 
-**3. Start API server**
+Run the example pipeline script:
 ```bash
-uvicorn src.deployment.api.main:app --host 0.0.0.0 --port 8000
+python scripts/example_pipeline.py
 ```
 
-**4. Run full RLAIF pipeline**
+Start the API server:
 ```bash
-python scripts/run_rlaif.py --config configs/config.yaml --iterations 5
+uvicorn deployment.api.main:app --host 0.0.0.0 --port 8000
+```
+
+Run a backtest through the CLI:
+```bash
+python -m src.cli backtest --start 2023-01-01 --end 2024-01-01 --symbols AAPL,MSFT
 ```
 
 ## Project Structure
