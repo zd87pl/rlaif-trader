@@ -310,6 +310,42 @@ class RiskEngine:
             self._kill_switch_active = False
         logger.warning("Kill switch deactivated – trading re-enabled")
 
+    # ── dynamic limits (set by portfolio strategist) ───────────────────
+
+    def set_dynamic_limits(
+        self,
+        max_exposure_pct: Optional[float] = None,
+        max_position_pct: Optional[float] = None,
+        max_trades_per_day: Optional[int] = None,
+    ) -> Dict[str, float]:
+        """Tighten risk limits at runtime (e.g. from portfolio strategist).
+
+        Only allows values *more conservative* than the immutable defaults.
+        Returns the actual limits applied.
+        """
+        applied = {}
+        with self._lock:
+            if max_exposure_pct is not None:
+                capped = min(max_exposure_pct, _IMMUTABLE_DEFAULTS.get(
+                    "max_total_exposure_pct", 0.60))
+                # Also cap at the original config value
+                capped = min(capped, 0.60)
+                self._config["max_total_exposure_pct"] = capped
+                applied["max_total_exposure_pct"] = capped
+
+            if max_position_pct is not None:
+                capped = min(max_position_pct, _IMMUTABLE_DEFAULTS["max_position_risk_pct"])
+                self._config["max_position_risk_pct"] = capped
+                applied["max_position_risk_pct"] = capped
+
+            if max_trades_per_day is not None:
+                self._config["max_trades_per_day"] = max(1, max_trades_per_day)
+                applied["max_trades_per_day"] = self._config["max_trades_per_day"]
+
+        if applied:
+            logger.info("Dynamic risk limits applied: %s", applied)
+        return applied
+
     # ── reset helpers ────────────────────────────────────────────────────
 
     def daily_reset(self) -> None:

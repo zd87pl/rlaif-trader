@@ -114,6 +114,23 @@ class CompositeMetric:
         """Sigmoid normalization to [0, 1]."""
         return float(1.0 / (1.0 + np.exp(-(x - center) / max(scale, 1e-9))))
 
+    def update_weights(
+        self,
+        sharpe: Optional[float] = None,
+        return_w: Optional[float] = None,
+        drawdown: Optional[float] = None,
+        hit_rate: Optional[float] = None,
+    ) -> None:
+        """Update metric weights at runtime (called by strategist)."""
+        if sharpe is not None:
+            self.weights["sharpe"] = sharpe
+        if return_w is not None:
+            self.weights["return"] = return_w
+        if drawdown is not None:
+            self.weights["drawdown"] = drawdown
+        if hit_rate is not None:
+            self.weights["hit_rate"] = hit_rate
+
     def compute_components(self, metrics: Dict[str, float]) -> Dict[str, float]:
         """Return individual component contributions for debugging."""
         sharpe = metrics.get("sharpe_ratio", 0.0)

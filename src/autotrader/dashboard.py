@@ -169,6 +169,56 @@ def create_app(
                 continue
         return out
 
+    # ── Advisor API ─────────────────────────────────────────────────────
+
+    _strategist_ref: Any = None
+
+    @app.get("/api/advisor")
+    async def api_advisor():
+        """Return current portfolio directive + reasoning."""
+        strat = _strategist_ref or (
+            _orchestrator_ref.strategist if _orchestrator_ref and hasattr(_orchestrator_ref, "strategist") else None
+        )
+        if not strat or not strat.current_directive:
+            return {"active": False, "reason": "No strategist connected or no assessment yet"}
+        d = strat.current_directive
+        return {
+            "active": True,
+            "directive": d.to_dict(),
+            "needs_reassessment": strat.needs_reassessment(),
+            "history_count": len(strat.history),
+            "last_assess_ago_min": strat.status().get("last_assess_ago_min"),
+        }
+
+    @app.post("/api/advisor/reassess")
+    async def api_advisor_reassess(request: Request):
+        """Force a portfolio reassessment."""
+        strat = _strategist_ref or (
+            _orchestrator_ref.strategist if _orchestrator_ref and hasattr(_orchestrator_ref, "strategist") else None
+        )
+        if not strat:
+            return JSONResponse({"error": "No strategist connected"}, 400)
+        body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        risk_pref = body.get("risk_preference", "moderate")
+        wallet = body.get("wallet_balance")
+        directive = strat.assess(
+            wallet_balance=float(wallet) if wallet else None,
+            risk_preference=risk_pref,
+        )
+        # Apply to orchestrator if wired
+        if _orchestrator_ref and hasattr(_orchestrator_ref, "_apply_directive"):
+            _orchestrator_ref._apply_directive(directive)
+        return {"reassessed": True, "directive": directive.to_dict()}
+
+    @app.get("/api/advisor/history")
+    async def api_advisor_history():
+        strat = _strategist_ref or (
+            _orchestrator_ref.strategist if _orchestrator_ref and hasattr(_orchestrator_ref, "strategist") else None
+        )
+        if not strat:
+            return []
+        return [d.to_dict() for d in strat.history[-20:]]
+
     @app.get("/api/live")
     async def api_live():
         """Return live orchestrator state (if wired)."""
@@ -577,6 +627,7 @@ select.setting-input { cursor:pointer; }
     <span class="ts" id="last-update">--</span>
     <button class="nav-btn" id="btn-monitor" onclick="showPage('monitor')" style="opacity:1">Monitor</button>
     <button class="nav-btn" id="btn-lab" onclick="showPage('lab')">Lab</button>
+    <button class="nav-btn" id="btn-advisor" onclick="showPage('advisor')">Advisor</button>
     <button class="nav-btn" id="btn-settings" onclick="showPage('settings')">Settings</button>
   </div>
 </div>
@@ -762,6 +813,80 @@ select.setting-input { cursor:pointer; }
 
 </div>
 </div><!-- /page-lab -->
+
+<!-- PAGE: ADVISOR -->
+<div id="page-advisor" class="page">
+<div class="settings-wrap" style="max-width:960px;">
+
+  <h2 style="margin-top:0;">Portfolio Advisor</h2>
+  <p style="color:var(--text-dim);font-size:0.82em;margin-bottom:16px;">
+    AI-driven capital allocation, strategy selection, and timing. Reads your wallet,
+    assesses market conditions, and configures the entire autotrader loop.
+  </p>
+
+  <div id="advisor-no-data" style="display:none;color:var(--yellow);padding:20px;text-align:center;">
+    No assessment yet. Click Reassess Now or start the autotrader.
+  </div>
+
+  <!-- Portfolio overview cards -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;" id="adv-cards">
+    <div class="card"><h3>Wallet</h3><div class="val green" id="adv-wallet">-</div><div class="delta" id="adv-tier">-</div></div>
+    <div class="card"><h3>Risk Budget</h3><div class="val blue" id="adv-risk">-</div><div class="delta" id="adv-exposure">deployed of equity</div></div>
+    <div class="card"><h3>Expected Daily</h3><div class="val" id="adv-daily">-</div><div class="delta" id="adv-daily-pct">-</div></div>
+    <div class="card"><h3>Target Sharpe</h3><div class="val blue" id="adv-sharpe">-</div></div>
+  </div>
+
+  <!-- Strategy recommendation -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+    <div class="card">
+      <h3>Strategy Style</h3>
+      <div id="adv-style" style="font-size:1.3em;font-weight:700;color:var(--cyan);margin:8px 0;">-</div>
+      <div id="adv-freq" style="font-size:0.82em;color:var(--text-dim);">-</div>
+    </div>
+    <div class="card">
+      <h3>Timing &amp; Limits</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:0.82em;margin-top:8px;">
+        <div><span style="color:var(--text-dim)">Check:</span> <span id="adv-check">-</span></div>
+        <div><span style="color:var(--text-dim)">Experiments:</span> <span id="adv-expfreq">-</span></div>
+        <div><span style="color:var(--text-dim)">Max DD:</span> <span id="adv-maxdd">-</span></div>
+        <div><span style="color:var(--text-dim)">Reassess:</span> <span id="adv-reassess">-</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Composite weights visual -->
+  <div class="card" style="margin-bottom:16px;">
+    <h3>Composite Metric Weights</h3>
+    <div id="adv-weights" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px;"></div>
+  </div>
+
+  <!-- Symbols focus -->
+  <div class="card" style="margin-bottom:16px;">
+    <h3>Symbols Focus</h3>
+    <div id="adv-symbols" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;"></div>
+  </div>
+
+  <!-- Reasoning -->
+  <div class="card" style="margin-bottom:16px;">
+    <h3>Reasoning</h3>
+    <div id="adv-reasoning" style="font-size:0.85em;line-height:1.6;color:var(--text);margin-top:8px;white-space:pre-wrap;">-</div>
+    <div style="margin-top:10px;">
+      <span style="color:var(--text-dim);font-size:0.75em;">Confidence:</span>
+      <div class="gauge" style="display:inline-block;width:120px;vertical-align:middle;margin-left:6px;">
+        <div class="gauge-track" style="height:6px;"><div class="gauge-fill" id="adv-conf-bar" style="width:50%;background:var(--cyan);height:100%;border-radius:3px;"></div></div>
+      </div>
+      <span id="adv-conf-val" style="font-size:0.78em;margin-left:6px;">50%</span>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div style="display:flex;gap:10px;align-items:center;">
+    <button class="save-btn" onclick="advisorReassess()" style="background:var(--cyan);">Reassess Now</button>
+    <span id="adv-last" style="font-size:0.78em;color:var(--text-dim);">-</span>
+  </div>
+
+</div>
+</div><!-- /page-advisor -->
 
 <!-- MODAL -->
 <div class="modal-bg" id="modal-bg" onclick="if(event.target===this)closeModal()">
@@ -1408,10 +1533,105 @@ function drawLabChart(results) {
   });
 }
 
+// ── Advisor ────────────────────────────────────────────────────────────
+
+async function loadAdvisor() {
+  try {
+    const data = await fetch('/api/advisor').then(r=>r.json());
+    if (!data.active) {
+      document.getElementById('advisor-no-data').style.display = 'block';
+      document.getElementById('adv-cards').style.display = 'none';
+      return;
+    }
+    document.getElementById('advisor-no-data').style.display = 'none';
+    document.getElementById('adv-cards').style.display = 'grid';
+
+    const d = data.directive;
+    // Cards
+    document.getElementById('adv-wallet').textContent = '$' + (d.wallet_balance||0).toLocaleString();
+    document.getElementById('adv-tier').textContent = (d.capital_tier||'unknown').toUpperCase();
+    document.getElementById('adv-risk').textContent = (d.risk_budget_pct*100).toFixed(0) + '%';
+    document.getElementById('adv-exposure').textContent = 'max ' + (d.max_position_pct*100).toFixed(1) + '% per trade';
+    const dailyDollar = d.wallet_balance * d.expected_daily_return;
+    document.getElementById('adv-daily').textContent = '$' + dailyDollar.toFixed(2);
+    document.getElementById('adv-daily').className = 'val ' + (dailyDollar >= 0 ? 'green' : 'red');
+    document.getElementById('adv-daily-pct').textContent = (d.expected_daily_return*100).toFixed(3) + '%/day';
+    document.getElementById('adv-sharpe').textContent = d.expected_sharpe.toFixed(1);
+
+    // Strategy
+    const styleMap = {scalping:'Scalping',day_trading:'Day Trading',swing:'Swing Trading',market_making:'Market Making'};
+    document.getElementById('adv-style').textContent = styleMap[d.strategy_style] || d.strategy_style;
+    document.getElementById('adv-freq').textContent = d.risk_preference + ' / ' + d.market_regime;
+
+    // Timing
+    const checkStr = d.check_interval_seconds >= 60 ? (d.check_interval_seconds/60).toFixed(0)+'m' : d.check_interval_seconds+'s';
+    document.getElementById('adv-check').textContent = checkStr;
+    document.getElementById('adv-expfreq').textContent = d.experiment_frequency;
+    document.getElementById('adv-maxdd').textContent = (d.max_acceptable_drawdown*100).toFixed(0) + '%';
+    document.getElementById('adv-reassess').textContent = d.reassess_after_minutes + 'min';
+
+    // Weights
+    const wEl = document.getElementById('adv-weights');
+    const w = d.composite_weights || {};
+    const wColors = {sharpe:'var(--blue)',return:'var(--green)',drawdown:'var(--red)',hit_rate:'var(--yellow)'};
+    wEl.innerHTML = Object.entries(w).map(([k,v]) => `
+      <div style="text-align:center;">
+        <div style="font-size:0.7em;color:var(--text-dim);text-transform:uppercase;">${k.replace('_',' ')}</div>
+        <div style="height:60px;display:flex;align-items:flex-end;justify-content:center;margin:4px 0;">
+          <div style="width:40px;height:${v*100*1.5}px;background:${wColors[k]||'var(--cyan)'};border-radius:3px 3px 0 0;opacity:0.8;"></div>
+        </div>
+        <div style="font-size:0.9em;font-weight:600;">${(v*100).toFixed(0)}%</div>
+      </div>
+    `).join('');
+
+    // Symbols
+    const sEl = document.getElementById('adv-symbols');
+    sEl.innerHTML = (d.symbols_focus||[]).map(s =>
+      `<span style="background:var(--border);padding:3px 10px;border-radius:4px;font-size:0.82em;">${s}</span>`
+    ).join('');
+
+    // Reasoning
+    document.getElementById('adv-reasoning').textContent = d.reasoning || 'No reasoning available';
+
+    // Confidence
+    const conf = (d.confidence||0.5)*100;
+    document.getElementById('adv-conf-bar').style.width = conf+'%';
+    document.getElementById('adv-conf-bar').style.background = conf > 70 ? 'var(--green)' : conf > 40 ? 'var(--cyan)' : 'var(--yellow)';
+    document.getElementById('adv-conf-val').textContent = conf.toFixed(0) + '%';
+
+    // Last assess
+    const ago = data.last_assess_ago_min;
+    document.getElementById('adv-last').textContent = ago !== null
+      ? 'Last assessed ' + ago.toFixed(0) + ' min ago' + (data.needs_reassessment ? ' (reassessment due)' : '')
+      : '';
+
+  } catch(e) { console.error('loadAdvisor:', e); }
+}
+
+async function advisorReassess() {
+  const riskPref = document.querySelector('[data-key="RISK_PREFERENCE"]');
+  const pref = riskPref ? riskPref.value : 'moderate';
+  try {
+    const resp = await fetch('/api/advisor/reassess', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({risk_preference: pref}),
+    }).then(r=>r.json());
+    if (resp.reassessed) loadAdvisor();
+    else alert(resp.error || 'Reassessment failed');
+  } catch(e) { alert('Reassess failed: '+e); }
+}
+
 // ── Init ───────────────────────────────────────────────────────────────
 loadAll();
 connectSSE();
 setInterval(loadAll, 5000);
+// Load advisor when its tab is shown
+const origShowPage = showPage;
+showPage = function(name) {
+  origShowPage(name);
+  if (name === 'advisor') loadAdvisor();
+};
 </script>
 </body>
 </html>"""

@@ -68,6 +68,8 @@ class ExperimentOrchestrator:
         improvement_threshold: float = 0.01,
         rlaif_callback: Optional[Callable] = None,
         time_budget_seconds: int = 300,
+        strategist: Any = None,
+        risk_engine: Any = None,
     ):
         self.sentinel = sentinel
         self.thesis_gen = thesis_gen
@@ -79,12 +81,15 @@ class ExperimentOrchestrator:
         self.improvement_threshold = improvement_threshold
         self.rlaif_callback = rlaif_callback
         self.time_budget_seconds = time_budget_seconds
+        self.strategist = strategist
+        self.risk_engine = risk_engine
 
         # State
         self._running = False
         self._current_best_score = 0.0
         self._iteration_count = 0
         self._last_experiment_time = 0.0
+        self._thesis_guidance: str = ""  # injected by strategist
 
     def run(
         self,
@@ -154,6 +159,46 @@ class ExperimentOrchestrator:
                     break
                 time.sleep(10)
 
+    def _apply_directive(self, directive: Any) -> None:
+        """Apply a PortfolioDirective from the strategist to reconfigure the loop."""
+        # Update sentinel timing
+        self.sentinel.update_timing(
+            check_interval=directive.check_interval_seconds,
+            scheduled_interval=directive.check_interval_seconds * 2,
+        )
+        # Update composite metric weights
+        w = directive.composite_weights
+        self.runner.metric.update_weights(
+            sharpe=w.get("sharpe"),
+            return_w=w.get("return"),
+            drawdown=w.get("drawdown"),
+            hit_rate=w.get("hit_rate"),
+        )
+        # Update improvement threshold
+        self.improvement_threshold = directive.improvement_threshold
+        # Update experiment frequency (mode)
+        freq_map = {"continuous": "continuous", "hourly": "hourly", "4h": "hourly", "daily": "hourly"}
+        self.mode = freq_map.get(directive.experiment_frequency, self.mode)
+        # Inject thesis guidance
+        self._thesis_guidance = directive.thesis_guidance or ""
+        # Update risk engine
+        if self.risk_engine and hasattr(self.risk_engine, "set_dynamic_limits"):
+            self.risk_engine.set_dynamic_limits(
+                max_exposure_pct=directive.risk_budget_pct,
+                max_position_pct=directive.max_position_pct,
+            )
+        # Update default symbols on runner
+        if directive.symbols_focus:
+            self.runner.default_symbols = directive.symbols_focus
+
+        logger.info(
+            "Directive applied: style=%s, risk=%.0f%%, check=%ds, mode=%s",
+            directive.strategy_style,
+            directive.risk_budget_pct * 100,
+            directive.check_interval_seconds,
+            self.mode,
+        )
+
     def _iteration(
         self,
         portfolio_state_fn: Optional[Callable],
@@ -161,6 +206,20 @@ class ExperimentOrchestrator:
     ) -> None:
         """Single iteration of the loop."""
         self._iteration_count += 1
+
+        # Periodic strategist reassessment
+        if self.strategist and self.strategist.needs_reassessment():
+            try:
+                portfolio_state = portfolio_state_fn() if portfolio_state_fn else None
+                directive = self.strategist.assess(
+                    wallet_balance=portfolio_state.get("account", {}).get("equity") if portfolio_state else None,
+                    current_positions=portfolio_state.get("positions", []) if portfolio_state else None,
+                    risk_preference=self.strategist._current_directive.risk_preference
+                        if self.strategist._current_directive else "moderate",
+                )
+                self._apply_directive(directive)
+            except Exception as e:
+                logger.debug("Strategist reassessment failed: %s", e)
 
         # Rate control based on mode
         if self.mode == "hourly":
@@ -226,6 +285,7 @@ class ExperimentOrchestrator:
             current_spec=current_spec,
             current_performance=current_perf,
             experiment_history=history,
+            strategist_guidance=self._thesis_guidance,
         )
 
         if not thesis.proposed_spec:
@@ -357,6 +417,7 @@ class ExperimentOrchestrator:
             current_spec=current_spec,
             current_performance=current_perf,
             experiment_history=history,
+            strategist_guidance=self._thesis_guidance,
         )
 
         if not thesis.proposed_spec:

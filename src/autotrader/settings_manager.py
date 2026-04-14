@@ -130,6 +130,32 @@ SETTING_DEFS: List[Dict[str, Any]] = [
         "default": "",
         "help": "Local MLX model for Apple Silicon (optional)",
     },
+    # --- Strategy ---
+    {
+        "key": "RISK_PREFERENCE",
+        "label": "Risk Appetite",
+        "group": "Strategy",
+        "type": "select",
+        "options": ["conservative", "moderate", "aggressive"],
+        "default": "moderate",
+        "help": "How aggressive should the AI advisor be with your capital?",
+    },
+    {
+        "key": "AUTO_REASSESS",
+        "label": "Auto-Reassess Strategy",
+        "group": "Strategy",
+        "type": "toggle",
+        "default": "true",
+        "help": "Automatically re-evaluate strategy when market conditions change",
+    },
+    {
+        "key": "REASSESS_INTERVAL_MIN",
+        "label": "Reassess Interval (minutes)",
+        "group": "Strategy",
+        "type": "text",
+        "default": "60",
+        "help": "How often the AI advisor re-evaluates the portfolio strategy (15-480)",
+    },
     # --- Runtime ---
     {
         "key": "DEVICE",
