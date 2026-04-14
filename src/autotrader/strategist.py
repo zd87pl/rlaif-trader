@@ -455,7 +455,30 @@ Remember: be realistic about expectations. A ${balance:,.0f} account {"cannot ge
         data["market_regime"] = regime
         data["risk_preference"] = risk_pref
 
-        return PortfolioDirective.from_dict(data)
+        directive = PortfolioDirective.from_dict(data)
+        self._compute_projections(directive)
+        return directive
+
+    @staticmethod
+    def _compute_projections(d: PortfolioDirective) -> None:
+        """Fill compound projection fields on a directive."""
+        bal = d.wallet_balance or 0
+        r = d.expected_daily_return
+        # Daily P&L (simple, on deployed capital)
+        d.projection_daily_pnl = round(bal * r, 2)
+        # Weekly (compound over 7 trading days for crypto)
+        d.expected_weekly_return = (1 + r) ** 7 - 1
+        d.projection_weekly_pnl = round(bal * d.expected_weekly_return, 2)
+        # Monthly (30 days compound)
+        monthly_r = (1 + r) ** 30 - 1
+        d.projection_monthly_pnl = round(bal * monthly_r, 2)
+        d.projection_monthly_balance = round(bal * (1 + monthly_r), 2)
+        # Yearly (365 days compound)
+        yearly_r = (1 + r) ** 365 - 1
+        d.projection_yearly_pnl = round(bal * yearly_r, 2)
+        d.projection_yearly_balance = round(bal * (1 + yearly_r), 2)
+        # Max drawdown in dollars
+        d.projection_drawdown_dollar = round(bal * d.max_acceptable_drawdown, 2)
 
     def _deterministic_assess(
         self,
@@ -528,7 +551,7 @@ Remember: be realistic about expectations. A ${balance:,.0f} account {"cannot ge
         else:
             symbols = ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "TSLA", "META"]
 
-        return PortfolioDirective(
+        directive = PortfolioDirective(
             strategy_style=style,
             risk_budget_pct=base["risk_budget_pct"],
             max_position_pct=base.get("max_position_pct", 0.02),
@@ -537,7 +560,6 @@ Remember: be realistic about expectations. A ${balance:,.0f} account {"cannot ge
             composite_weights=base["composite_weights"],
             improvement_threshold=base.get("improvement_threshold", 0.01),
             expected_daily_return=base["expected_daily_return"],
-            expected_weekly_return=base["expected_daily_return"] * 5,
             expected_sharpe=base.get("expected_sharpe", 1.5),
             max_acceptable_drawdown=base.get("max_acceptable_drawdown", 0.10),
             symbols_focus=symbols,
@@ -550,6 +572,20 @@ Remember: be realistic about expectations. A ${balance:,.0f} account {"cannot ge
             market_regime=regime,
             risk_preference=risk_pref,
         )
+        self._compute_projections(directive)
+
+        # Enrich reasoning with projections
+        directive.reasoning += (
+            f"\n\nProjected growth (compound):\n"
+            f"  Daily:   ${directive.projection_daily_pnl:,.2f} ({directive.expected_daily_return*100:.2f}%)\n"
+            f"  Weekly:  ${directive.projection_weekly_pnl:,.2f} ({directive.expected_weekly_return*100:.2f}%)\n"
+            f"  Monthly: ${directive.projection_monthly_pnl:,.2f} -> ${directive.projection_monthly_balance:,.0f}\n"
+            f"  Yearly:  ${directive.projection_yearly_pnl:,.2f} -> ${directive.projection_yearly_balance:,.0f}\n"
+            f"  Max risk: ${directive.projection_drawdown_dollar:,.2f} drawdown "
+            f"({directive.max_acceptable_drawdown*100:.0f}% of capital)"
+        )
+
+        return directive
 
     def status(self) -> Dict[str, Any]:
         d = self._current_directive
