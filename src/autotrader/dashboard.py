@@ -179,6 +179,36 @@ def create_app(
         except Exception as e:
             return {"connected": False, "error": str(e)}
 
+    # ── Settings API ───────────────────────────────────────────────────
+
+    from .settings_manager import SettingsManager
+    settings_mgr = SettingsManager()
+
+    @app.get("/api/settings")
+    async def api_settings():
+        """Return all settings grouped, with secrets masked."""
+        return {
+            "groups": settings_mgr.get_grouped(),
+            "issues": settings_mgr.validate(),
+        }
+
+    @app.post("/api/settings")
+    async def api_settings_save(request: Request):
+        """Save settings to .env.local. Body: {key: value, ...}"""
+        body = await request.json()
+        updates = {}
+        for key, value in body.items():
+            # Don't save masked values (the user didn't change them)
+            if value and not value.startswith("*"):
+                updates[key] = value
+        if updates:
+            settings_mgr.set_many(updates)
+        return {"saved": list(updates.keys()), "issues": settings_mgr.validate()}
+
+    @app.get("/api/settings/validate")
+    async def api_settings_validate():
+        return {"issues": settings_mgr.validate()}
+
     # ── SSE stream ──────────────────────────────────────────────────────
 
     if _HAS_SSE:
@@ -341,6 +371,63 @@ tr.row-crash td:first-child { border-left:3px solid var(--red); }
                     cursor:pointer; font-size:1.3em; }
 .modal .close-btn:hover { color:var(--text); }
 
+/* Nav buttons */
+.nav-btn { background:var(--surface); border:1px solid var(--border); color:var(--text-dim);
+           padding:5px 14px; border-radius:4px; cursor:pointer; font-family:var(--font);
+           font-size:0.78em; opacity:0.6; transition:all 0.2s; }
+.nav-btn:hover { opacity:0.9; border-color:var(--border-h); }
+.nav-btn.active { opacity:1; color:var(--cyan); border-color:var(--cyan); }
+
+/* Settings page */
+.page { display:none; }
+.page.active { display:block; }
+#page-monitor { display:block; }
+
+.settings-wrap { max-width:800px; margin:0 auto; padding:24px; }
+.settings-wrap h2 { font-size:0.85em; color:var(--cyan); margin:24px 0 12px; padding-bottom:6px;
+                     border-bottom:1px solid var(--border); text-transform:uppercase; letter-spacing:1px; }
+.settings-wrap h2:first-child { margin-top:0; }
+
+.setting-row { display:grid; grid-template-columns:200px 1fr; gap:12px; align-items:start;
+               padding:10px 0; border-bottom:1px solid var(--border); }
+.setting-label { font-size:0.82em; font-weight:600; color:var(--text); padding-top:6px; }
+.setting-label .req { color:var(--red); margin-left:2px; }
+.setting-help { font-size:0.72em; color:var(--text-dim); margin-top:2px; }
+.setting-source { font-size:0.65em; padding:1px 6px; border-radius:3px; margin-left:6px; }
+.src-env   { background:#1a2a1a; color:var(--green); }
+.src-local { background:#1a1a2a; color:var(--blue); }
+.src-dotenv { background:#2a2a1a; color:var(--yellow); }
+.src-default { background:var(--border); color:var(--text-dim); }
+
+.setting-input { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:4px;
+                 padding:7px 10px; color:var(--text); font-family:var(--font); font-size:0.85em; }
+.setting-input:focus { outline:none; border-color:var(--cyan); }
+.setting-input.secret-set { color:var(--text-dim); }
+select.setting-input { cursor:pointer; }
+
+.toggle-row { display:flex; align-items:center; gap:8px; }
+.toggle { position:relative; width:36px; height:20px; cursor:pointer; }
+.toggle input { display:none; }
+.toggle .slider { position:absolute; top:0;left:0;right:0;bottom:0; background:var(--border);
+                  border-radius:10px; transition:0.3s; }
+.toggle .slider:before { content:''; position:absolute; height:14px;width:14px;left:3px;bottom:3px;
+                          background:var(--text-dim); border-radius:50%; transition:0.3s; }
+.toggle input:checked + .slider { background:var(--cyan); }
+.toggle input:checked + .slider:before { transform:translateX(16px); background:white; }
+
+.save-bar { position:sticky; bottom:0; background:var(--surface); border-top:1px solid var(--border);
+            padding:14px 24px; display:flex; align-items:center; justify-content:space-between; }
+.save-btn { background:var(--cyan); color:#000; border:none; padding:8px 24px; border-radius:4px;
+            font-family:var(--font); font-weight:700; font-size:0.85em; cursor:pointer; }
+.save-btn:hover { opacity:0.9; }
+.save-btn:disabled { opacity:0.4; cursor:default; }
+.save-msg { font-size:0.82em; color:var(--green); }
+
+.issues-bar { background:#1a1210; border:1px solid #3a2010; border-radius:6px; padding:10px 14px;
+              margin-bottom:16px; }
+.issues-bar .issue { font-size:0.82em; color:var(--yellow); padding:2px 0; }
+.issues-bar .issue:before { content:'\\26A0 '; }
+
 /* Responsive */
 @media (max-width:1100px) {
   .cards { grid-template-columns:repeat(3,1fr); }
@@ -359,8 +446,13 @@ tr.row-crash td:first-child { border-left:3px solid var(--red); }
   </div>
   <div class="hdr-right">
     <span class="ts" id="last-update">--</span>
+    <button class="nav-btn" id="btn-monitor" onclick="showPage('monitor')" style="opacity:1">Monitor</button>
+    <button class="nav-btn" id="btn-settings" onclick="showPage('settings')">Settings</button>
   </div>
 </div>
+
+<!-- PAGE: MONITOR -->
+<div id="page-monitor" class="page active">
 
 <!-- SUMMARY CARDS -->
 <div class="cards">
@@ -443,6 +535,20 @@ tr.row-crash td:first-child { border-left:3px solid var(--red); }
     </div>
   </div>
 </div>
+
+</div><!-- /page-monitor -->
+
+<!-- PAGE: SETTINGS -->
+<div id="page-settings" class="page">
+<div class="settings-wrap">
+  <div id="settings-issues"></div>
+  <div id="settings-form"></div>
+  <div class="save-bar">
+    <span class="save-msg" id="save-msg"></span>
+    <button class="save-btn" id="save-btn" onclick="saveSettings()">Save Settings</button>
+  </div>
+</div>
+</div><!-- /page-settings -->
 
 <!-- MODAL -->
 <div class="modal-bg" id="modal-bg" onclick="if(event.target===this)closeModal()">
@@ -805,10 +911,130 @@ function highlightPython(code) {
     .replace(/(&amp;|&lt;|&gt;|[|+\\-*/=!])/g, '<span class="op">$1</span>');
 }
 
+// ── Page navigation ────────────────────────────────────────────────────
+
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  document.getElementById('btn-'+name).classList.add('active');
+  if (name === 'settings') loadSettings();
+}
+
+// ── Settings ───────────────────────────────────────────────────────────
+
+let settingsData = {};
+let settingsDirty = false;
+
+async function loadSettings() {
+  try {
+    const data = await fetch('/api/settings').then(r=>r.json());
+    settingsData = data;
+    renderSettingsForm(data.groups);
+    renderSettingsIssues(data.issues);
+    settingsDirty = false;
+    document.getElementById('save-msg').textContent = '';
+  } catch(e) { console.error('loadSettings:', e); }
+}
+
+function renderSettingsIssues(issues) {
+  const el = document.getElementById('settings-issues');
+  if (!issues || !issues.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div class="issues-bar">' +
+    issues.map(i => '<div class="issue">'+i.message+'</div>').join('') + '</div>';
+}
+
+function renderSettingsForm(groups) {
+  const form = document.getElementById('settings-form');
+  let html = '';
+  for (const [group, settings] of Object.entries(groups)) {
+    html += '<h2>'+group+'</h2>';
+    for (const s of settings) {
+      const srcClass = 'src-'+(s.source||'default');
+      const srcLabel = s.source==='env'?'ENV':s.source==='local'?'LOCAL':s.source==='dotenv'?'.ENV':'DEFAULT';
+      html += '<div class="setting-row">';
+      html += '<div class="setting-label">'+s.label+(s.required?'<span class="req">*</span>':'')+
+        '<span class="setting-source '+srcClass+'">'+srcLabel+'</span>'+
+        '<div class="setting-help">'+s.help+'</div></div>';
+      html += '<div>';
+
+      if (s.type === 'secret') {
+        html += '<input class="setting-input'+(s.is_set?' secret-set':'')+'" type="password" '+
+          'data-key="'+s.key+'" value="'+(s.value||'')+'" '+
+          'placeholder="'+(s.is_set?'(set - click to change)':'Enter '+s.label)+'" '+
+          'onfocus="this.type=\\'text\\';this.classList.remove(\\'secret-set\\')" '+
+          'onblur="if(!this.value)this.type=\\'password\\'" '+
+          'oninput="markDirty()">';
+      } else if (s.type === 'select') {
+        html += '<select class="setting-input" data-key="'+s.key+'" onchange="markDirty()">';
+        for (const opt of (s.options||[])) {
+          html += '<option value="'+opt+'"'+(s.value===opt?' selected':'')+'>'+opt+'</option>';
+        }
+        html += '</select>';
+      } else if (s.type === 'toggle') {
+        const checked = (s.value||'').toLowerCase() === 'true';
+        html += '<div class="toggle-row"><label class="toggle"><input type="checkbox" data-key="'+s.key+'" '+
+          (checked?'checked':'')+' onchange="markDirty()"><span class="slider"></span></label>'+
+          '<span style="font-size:0.82em;color:var(--text-dim)">'+(checked?'Enabled':'Disabled')+'</span></div>';
+      } else {
+        html += '<input class="setting-input" type="text" data-key="'+s.key+'" '+
+          'value="'+(s.value||'')+'" placeholder="'+s.label+'" oninput="markDirty()">';
+      }
+
+      html += '</div></div>';
+    }
+  }
+  form.innerHTML = html;
+}
+
+function markDirty() {
+  settingsDirty = true;
+  document.getElementById('save-msg').textContent = 'Unsaved changes';
+  document.getElementById('save-msg').style.color = 'var(--yellow)';
+}
+
+async function saveSettings() {
+  const updates = {};
+  document.querySelectorAll('.setting-input, .toggle input').forEach(el => {
+    const key = el.dataset.key;
+    if (!key) return;
+    if (el.type === 'checkbox') {
+      updates[key] = el.checked ? 'true' : 'false';
+    } else {
+      const val = el.value.trim();
+      if (val) updates[key] = val;
+    }
+  });
+
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(updates),
+    }).then(r=>r.json());
+
+    document.getElementById('save-msg').textContent =
+      'Saved ' + (resp.saved||[]).length + ' setting(s)';
+    document.getElementById('save-msg').style.color = 'var(--green)';
+    settingsDirty = false;
+
+    // Reload to show updated sources
+    setTimeout(loadSettings, 500);
+  } catch(e) {
+    document.getElementById('save-msg').textContent = 'Save failed: '+e;
+    document.getElementById('save-msg').style.color = 'var(--red)';
+  }
+}
+
+// Warn before leaving with unsaved changes
+window.addEventListener('beforeunload', (e) => {
+  if (settingsDirty) { e.preventDefault(); e.returnValue = ''; }
+});
+
 // ── Init ───────────────────────────────────────────────────────────────
 loadAll();
 connectSSE();
-setInterval(loadAll, 5000);  // Fallback poll every 5s
+setInterval(loadAll, 5000);
 </script>
 </body>
 </html>"""
