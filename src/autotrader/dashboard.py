@@ -198,7 +198,8 @@ def create_app(
         )
         if not strat:
             return JSONResponse({"error": "No strategist connected"}, 400)
-        body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        content_type = request.headers.get("content-type", "")
+        body = await request.json() if content_type.startswith("application/json") else {}
         risk_pref = body.get("risk_preference", "moderate")
         wallet = body.get("wallet_balance")
         directive = strat.assess(

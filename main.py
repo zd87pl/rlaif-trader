@@ -558,13 +558,21 @@ class TradingPipeline:
             from src.autotrader.settings_manager import SettingsManager
             settings_mgr = SettingsManager()
             risk_pref = settings_mgr.get("RISK_PREFERENCE") or "moderate"
+            auto_reassess = settings_mgr.get("AUTO_REASSESS").strip().lower() != "false"
+            try:
+                reassess_interval_min = int(settings_mgr.get("REASSESS_INTERVAL_MIN") or "60")
+            except ValueError:
+                reassess_interval_min = 60
 
             self.strategist = PortfolioStrategist(
                 llm_client=self.llm_client,
                 broker=self.broker,
             )
             # Initial assessment
-            directive = self.strategist.assess(risk_preference=risk_pref)
+            directive = self.strategist.assess(
+                risk_preference=risk_pref,
+                reassess_after_minutes_override=reassess_interval_min,
+            )
             self.logger.info(
                 "Portfolio strategist: style=%s, risk=%.0f%%, tier=%s",
                 directive.strategy_style,
@@ -573,6 +581,8 @@ class TradingPipeline:
             )
         except Exception as exc:
             self.logger.debug("Portfolio strategist unavailable: %s", exc)
+            auto_reassess = True
+            reassess_interval_min = 60
 
         # RLAIF bridge: connect experiment outcomes to reward model training
         rlaif_callback = None
@@ -601,6 +611,8 @@ class TradingPipeline:
             rlaif_callback=rlaif_callback,
             strategist=self.strategist,
             risk_engine=self.risk_engine,
+            auto_reassess=auto_reassess,
+            reassess_interval_minutes=reassess_interval_min,
         )
 
         # Apply initial directive if available

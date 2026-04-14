@@ -557,7 +557,7 @@ def autotrader_history(ctx, limit):
                 f"{r.sharpe_ratio:>7.3f}  "
                 f"{r.cumulative_return:>8.4f}  "
                 f"{r.max_drawdown:>7.4f}  "
-                f"{click.style(r.status:>8s, fg=status_color)}  "
+                f"{click.style(f'{r.status:>8s}', fg=status_color)}  "
                 f"{r.description[:40]}"
             )
 

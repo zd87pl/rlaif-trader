@@ -115,7 +115,7 @@ Repository = "https://github.com/yourusername/rlaif-trading"
 rlaif = "src.cli:cli"
 rlaif-train = "src.train:main"
 rlaif-backtest = "src.backtesting.runner:main"
-rlaif-serve = "src.deployment.api.main:main"
+rlaif-serve = "src.serve:main"
 
 [tool.setuptools]
 packages = {find = {where = ["."], include = ["src", "src.*"]}}
@@ -182,7 +182,4 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "--verbose",
-    "--cov=src",
-    "--cov-report=term-missing",
-    "--cov-report=html",
 ]
