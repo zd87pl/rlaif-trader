@@ -456,6 +456,166 @@ def model_load(model_id):
 
 
 # ---------------------------------------------------------------------------
+# autotrader
+# ---------------------------------------------------------------------------
+@cli.group(name="autotrader")
+def autotrader_group():
+    """Autonomous strategy experimentation loop (autoresearch for trading)."""
+    pass
+
+
+@autotrader_group.command(name="start")
+@click.option("--mode", "-m", default=None, type=click.Choice(["continuous", "on_event", "hourly"]),
+              help="Override mode from config.")
+@click.pass_context
+def autotrader_start(ctx, mode):
+    """Start the autonomous experimentation loop (NEVER STOP)."""
+    _header("AutoTrader — Self-Improving Quant")
+    _warn("Starting autonomous experimentation loop. Press Ctrl+C to stop.")
+    click.echo()
+
+    pipe = _pipeline(config=ctx.obj["config"])
+    if pipe.autotrader is None:
+        _err("AutoTrader not initialised. Check configs/autotrader.yaml (enabled: true)")
+        return
+
+    try:
+        pipe.run_autotrader(mode=mode)
+    except KeyboardInterrupt:
+        click.echo()
+        _warn("AutoTrader stopped by user.")
+
+
+@autotrader_group.command(name="status")
+@click.pass_context
+def autotrader_status(ctx):
+    """Show autotrader status: experiments run, best score, safety state."""
+    _header("AutoTrader Status")
+
+    pipe = _pipeline(config=ctx.obj["config"])
+    st = pipe.autotrader_status()
+
+    if not st.get("enabled", True):
+        _warn(f"AutoTrader disabled: {st.get('reason', 'unknown')}")
+        return
+
+    _kv("Running", st.get("running", False), "green" if st.get("running") else "yellow")
+    _kv("Mode", st.get("mode", "?"))
+    _kv("Iterations", st.get("iteration_count", 0))
+    _kv("Best Score", f"{st.get('current_best_score', 0):.6f}", "green")
+    _kv("Threshold", f"{st.get('improvement_threshold', 0):.4f}")
+
+    click.echo()
+    click.echo(click.style("  Experiment Log:", bold=True))
+    click.echo(f"    {st.get('log_summary', 'No data')}")
+
+    safety = st.get("safety", {})
+    if safety:
+        click.echo()
+        click.echo(click.style("  Safety:", bold=True))
+        _kv("Halted", safety.get("halted", False), "red" if safety.get("halted") else "green")
+        _kv("Crashes", safety.get("consecutive_crashes", 0))
+        _kv("Experiments/hr", f"{safety.get('experiments_last_hour', 0)}/{safety.get('max_experiments_per_hour', 12)}")
+        _kv("Swaps/24h", f"{safety.get('swaps_last_24h', 0)}/{safety.get('max_swaps_per_day', 6)}")
+
+    swapper = st.get("swapper", {})
+    if swapper:
+        click.echo()
+        click.echo(click.style("  Active Strategy:", bold=True))
+        _kv("Spec ID", swapper.get("active_spec_id", "none"))
+        _kv("Description", swapper.get("active_description", "none"))
+        _kv("Strategies on disk", swapper.get("strategies_on_disk", 0))
+
+    click.echo()
+
+
+@autotrader_group.command(name="history")
+@click.option("--limit", "-n", default=20, help="Number of recent experiments to show.")
+@click.pass_context
+def autotrader_history(ctx, limit):
+    """Show recent experiment history."""
+    _header(f"AutoTrader History (last {limit})")
+
+    try:
+        from src.autotrader import ExperimentLog
+        log = ExperimentLog()
+        results = log.recent(limit)
+
+        if not results:
+            _warn("No experiments yet.")
+            return
+
+        # Header
+        click.echo(f"  {'ID':>12s}  {'Score':>8s}  {'Sharpe':>7s}  {'Return':>8s}  {'DD':>7s}  {'Status':>8s}  Description")
+        click.echo(f"  {'─' * 12}  {'─' * 8}  {'─' * 7}  {'─' * 8}  {'─' * 7}  {'─' * 8}  {'─' * 30}")
+
+        for r in results:
+            status_color = {"keep": "green", "discard": "yellow", "crash": "red", "timeout": "red"}.get(r.status, "white")
+            click.echo(
+                f"  {r.experiment_id:>12s}  "
+                f"{r.composite_score:>8.4f}  "
+                f"{r.sharpe_ratio:>7.3f}  "
+                f"{r.cumulative_return:>8.4f}  "
+                f"{r.max_drawdown:>7.4f}  "
+                f"{click.style(r.status:>8s, fg=status_color)}  "
+                f"{r.description[:40]}"
+            )
+
+        click.echo()
+        click.echo(f"  {log.format_summary()}")
+    except Exception as exc:
+        _err(f"Failed to read history: {exc}")
+    click.echo()
+
+
+@autotrader_group.command(name="dashboard")
+@click.option("--port", "-p", default=8501, help="Dashboard port.")
+@click.pass_context
+def autotrader_dashboard(ctx, port):
+    """Launch the real-time experiment dashboard (web UI)."""
+    _header("AutoTrader Dashboard")
+    try:
+        import uvicorn
+        from src.autotrader.dashboard import create_app
+        app = create_app()
+        _ok(f"Dashboard starting at http://localhost:{port}")
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    except ImportError:
+        _err("Install FastAPI + uvicorn: pip install fastapi uvicorn")
+    except Exception as exc:
+        _err(f"Dashboard failed: {exc}")
+
+
+@autotrader_group.command(name="run-once")
+@click.pass_context
+def autotrader_run_once(ctx):
+    """Run a single experiment iteration (for testing)."""
+    _header("AutoTrader — Single Experiment")
+
+    pipe = _pipeline(config=ctx.obj["config"])
+    if pipe.autotrader is None:
+        _err("AutoTrader not initialised.")
+        return
+
+    click.echo("  Running single experiment...")
+    result = pipe.autotrader.run_single()
+
+    status_color = {"keep": "green", "discard": "yellow", "crash": "red"}.get(result.status, "white")
+    click.echo()
+    _kv("Status", click.style(result.status.upper(), fg=status_color))
+    _kv("Composite Score", f"{result.composite_score:.6f}")
+    _kv("Sharpe Ratio", f"{result.sharpe_ratio:.4f}")
+    _kv("Cumulative Return", f"{result.cumulative_return:.4f}")
+    _kv("Max Drawdown", f"{result.max_drawdown:.4f}")
+    _kv("Hit Rate", f"{result.hit_rate:.4f}")
+    _kv("Num Trades", result.num_trades)
+    _kv("Duration", f"{result.backtest_duration_seconds:.1f}s")
+    if result.error:
+        _err(f"Error: {result.error}")
+    click.echo()
+
+
+# ---------------------------------------------------------------------------
 # risk
 # ---------------------------------------------------------------------------
 @cli.command()

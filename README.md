@@ -1,16 +1,18 @@
 # RLAIF Trading Pipeline
 
-A production-ready **Reinforcement Learning from AI Feedback (RLAIF)** system for stock prediction that combines foundation models, multi-agent Claude LLM analysis, and deep reinforcement learning.
+A production-ready **Reinforcement Learning from AI Feedback (RLAIF)** system for stock and crypto trading that combines foundation models, multi-agent Claude LLM analysis, deep reinforcement learning, and an **autonomous strategy experimentation loop** inspired by [autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx).
 
 ## Overview
 
-This system implements the frontier of AI-driven stock prediction by integrating:
+This system implements the frontier of AI-driven trading by integrating:
 
 - **Foundation Models**: TimesFM 2.5 / TTM for time series prediction
 - **Multi-Agent LLM**: Claude-powered specialized analysts (fundamental, sentiment, technical, risk)
 - **RAG System**: FAISS-based retrieval for financial documents
 - **Deep RL**: TD3/SAC ensemble for tactical execution
 - **RLAIF Loop**: Market-outcome-based feedback to fine-tune LLM analysis
+- **AutoTrader**: Autonomous strategy experimentation loop that generates, backtests, and hot-swaps Python signal functions
+- **Multi-Broker**: Alpaca, Tradier, Binance (24/7 crypto), and paper trading
 - **Production Deployment**: RunPod Serverless with comprehensive monitoring
 
 **Target Performance** (based on Trading-R1 benchmarks):
@@ -33,6 +35,26 @@ Data Ingestion → Feature Engineering → Foundation Models
                             Market Outcomes
                                              ↓
                     RLAIF Feedback Loop → Improved LLM
+```
+
+### AutoTrader: Self-Improving Strategy Loop
+
+```
+MarketSentinel ──→ ThesisGenerator (Claude) ──→ generate_signals() code
+                                                        ↓
+                                              Sandboxed Backtest (5 min)
+                                                        ↓
+                                              Composite Metric Score
+                                                        ↓
+                                            Keep / Discard decision
+                                                        ↓ (if kept)
+                                              Hot-swap live strategy
+                                                        ↓
+                                              RLAIF preference pairs
+                                                        ↓
+                                              Reward model training
+                                                        ↓
+                                              LOOP FOREVER
 ```
 
 ## Quick Start
@@ -110,6 +132,16 @@ Run a backtest through the CLI:
 python -m src.cli backtest --start 2023-01-01 --end 2024-01-01 --symbols AAPL,MSFT
 ```
 
+Start the autonomous strategy experimentation loop:
+```bash
+python -m src.cli autotrader start                # NEVER STOP loop
+python -m src.cli autotrader start --mode hourly  # Once per hour
+python -m src.cli autotrader run-once             # Single experiment
+python -m src.cli autotrader status               # Dashboard in terminal
+python -m src.cli autotrader history              # Experiment log
+python -m src.cli autotrader dashboard            # Web UI at :8501
+```
+
 ## Project Structure
 
 ```
@@ -147,6 +179,19 @@ rlaif-trading/
 │   │   ├── manager_agent.py
 │   │   ├── rag_system.py
 │   │   └── claude_client.py
+│   │
+│   ├── autotrader/       # Autonomous strategy experimentation (autoresearch pattern)
+│   │   ├── orchestrator.py         # NEVER STOP loop
+│   │   ├── thesis_generator.py     # Claude-powered signal code generation
+│   │   ├── experiment_runner.py    # Sandboxed backtest execution
+│   │   ├── sentinel.py             # Market event detection
+│   │   ├── strategy_spec.py        # Serializable strategy with Python code
+│   │   ├── strategy_swapper.py     # YOLO hot-swap
+│   │   ├── safety.py               # AST validation, rate limits, kill switch
+│   │   ├── metrics.py              # Composite score (Sharpe/return/DD/hit)
+│   │   ├── experiment_log.py       # TSV results log (autoresearch pattern)
+│   │   ├── rlaif_bridge.py         # Feeds experiments into RLAIF reward model
+│   │   └── dashboard.py            # FastAPI real-time web dashboard
 │   │
 │   ├── rlaif/            # RLAIF feedback loop
 │   │   ├── preference_generator.py
@@ -264,7 +309,33 @@ Learn from actual market outcomes:
 4. Fine-tune Claude via PPO/DPO
 5. Improved analysis quality → Better predictions
 
-### 5. Rigorous Backtesting
+### 5. AutoTrader: Autonomous Strategy Experimentation
+
+Inspired by [autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx), the AutoTrader applies the "edit code, run, measure, keep/discard, repeat" pattern to trading strategies:
+
+- **Market Sentinel**: Detects regime changes, vol spikes, drawdown breaches, and P&L deviations
+- **Thesis Generator**: Claude writes complete Python `generate_signals()` functions
+- **Sandboxed Runner**: Backtests in a subprocess with AST-validated code (blocks `os`, `subprocess`, `eval`)
+- **Composite Metric**: Weighted Sharpe (35%) + return (30%) + drawdown (20%) + hit rate (15%)
+- **YOLO Hot-Swap**: Immediately deploys winning strategies to live trading
+- **RLAIF Bridge**: Experiment outcomes feed the reward model for a double feedback loop
+- **Safety**: Rate limits (12 experiments/hr, 6 swaps/day), kill switch, crash tracking
+- **Dashboard**: Real-time web UI with score evolution chart and experiment history
+
+```bash
+rlaif autotrader start    # Runs ~8-10 experiments/hour, forever
+```
+
+### 6. Multi-Broker Support
+
+| Broker | Markets | Status |
+|--------|---------|--------|
+| Alpaca | US stocks, options | Live |
+| Tradier | US stocks, options (multi-leg) | Live |
+| Binance | Crypto spot + USDT-M futures (24/7) | Live |
+| Paper | Simulated (any market) | Live |
+
+### 7. Rigorous Backtesting
 
 - Walk-forward analysis (no data snooping)
 - Purged cross-validation (no label leakage)
@@ -272,7 +343,7 @@ Learn from actual market outcomes:
 - Multiple market regimes (bull, bear, volatile)
 - Comprehensive metrics (Sharpe, Sortino, Calmar, CVaR)
 
-### 6. Production Deployment
+### 8. Production Deployment
 
 - Docker containers (<5GB target)
 - RunPod Serverless (T4/A100 GPUs)
@@ -453,7 +524,16 @@ Based on backtesting from 2020-2024:
 - [ ] Monitoring setup
 - [ ] Paper trading validation
 
-### Phase 7: Continuous Improvement (Ongoing)
+### Phase 7: AutoTrader (✓ Complete)
+- [x] Autonomous strategy experimentation loop (autoresearch pattern)
+- [x] Claude-powered signal function code generation
+- [x] Sandboxed backtest execution with AST validation
+- [x] YOLO hot-swap with audit trail
+- [x] RLAIF bridge (double feedback loop)
+- [x] Binance broker integration (24/7 crypto)
+- [x] Real-time web dashboard
+
+### Phase 8: Continuous Improvement (Ongoing)
 - [ ] Automated retraining
 - [ ] A/B testing
 - [ ] Performance tracking

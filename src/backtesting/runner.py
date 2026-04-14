@@ -20,6 +20,7 @@ class BenchmarkBacktestRunner:
     technical_engine: Optional[Any] = None
     commission_bps: float = 0.0
     slippage_bps: float = 0.0
+    signal_function: Optional[Any] = None  # Optional custom signal fn for autotrader
 
     def __post_init__(self) -> None:
         if self.data_client is None:
@@ -115,12 +116,21 @@ class BenchmarkBacktestRunner:
         frame = df.copy()
         frame["next_return"] = frame["close"].pct_change().shift(-1).fillna(0.0)
 
-        frame["strategy_signal"] = (
-            (frame["close"] > frame.get("sma_20"))
-            & (frame.get("sma_20") > frame.get("sma_50"))
-            & (frame.get("macd_hist") > 0)
-            & (frame.get("rsi") > 50)
-        ).astype(int)
+        # Use custom signal function if provided (autotrader integration)
+        if self.signal_function is not None:
+            try:
+                signals = self.signal_function(frame, {})
+                frame["strategy_signal"] = signals.clip(-1, 1).fillna(0).astype(int)
+            except Exception as exc:
+                logger.warning("Custom signal_function failed for %s: %s", symbol, exc)
+                frame["strategy_signal"] = 0
+        else:
+            frame["strategy_signal"] = (
+                (frame["close"] > frame.get("sma_20"))
+                & (frame.get("sma_20") > frame.get("sma_50"))
+                & (frame.get("macd_hist") > 0)
+                & (frame.get("rsi") > 50)
+            ).astype(int)
         frame["buy_hold_signal"] = 1
         frame["sma_cross_signal"] = (
             (frame["close"] > frame.get("sma_20")) & (frame.get("sma_20") > frame.get("sma_50"))
