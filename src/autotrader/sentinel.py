@@ -289,6 +289,21 @@ class MarketSentinel:
                 )
         return None
 
+    def update_timing(
+        self,
+        check_interval: Optional[int] = None,
+        scheduled_interval: Optional[int] = None,
+    ) -> None:
+        """Update timing parameters at runtime (called by strategist)."""
+        if check_interval is not None:
+            self.check_interval = max(5, check_interval)
+        if scheduled_interval is not None:
+            self.scheduled_interval = max(60, scheduled_interval)
+        logger.info(
+            "Sentinel timing updated: check=%ds, scheduled=%ds",
+            self.check_interval, self.scheduled_interval,
+        )
+
     def _check_scheduled(self) -> Optional[MarketEvent]:
         """Emit periodic scheduled triggers regardless of market conditions."""
         now = time.time()

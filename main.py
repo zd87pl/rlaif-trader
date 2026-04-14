@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -551,6 +551,29 @@ class TradingPipeline:
             audit_log_path=log_cfg.get("audit_log", "data/autotrader/audit.jsonl"),
         )
 
+        # Portfolio strategist: AI-driven capital allocation & timing
+        self.strategist = None
+        try:
+            from src.autotrader.strategist import PortfolioStrategist
+            from src.autotrader.settings_manager import SettingsManager
+            settings_mgr = SettingsManager()
+            risk_pref = settings_mgr.get("RISK_PREFERENCE") or "moderate"
+
+            self.strategist = PortfolioStrategist(
+                llm_client=self.llm_client,
+                broker=self.broker,
+            )
+            # Initial assessment
+            directive = self.strategist.assess(risk_preference=risk_pref)
+            self.logger.info(
+                "Portfolio strategist: style=%s, risk=%.0f%%, tier=%s",
+                directive.strategy_style,
+                directive.risk_budget_pct * 100,
+                directive.capital_tier,
+            )
+        except Exception as exc:
+            self.logger.debug("Portfolio strategist unavailable: %s", exc)
+
         # RLAIF bridge: connect experiment outcomes to reward model training
         rlaif_callback = None
         try:
@@ -576,7 +599,13 @@ class TradingPipeline:
             improvement_threshold=exp_cfg.get("improvement_threshold", 0.01),
             time_budget_seconds=exp_cfg.get("time_budget_seconds", 300),
             rlaif_callback=rlaif_callback,
+            strategist=self.strategist,
+            risk_engine=self.risk_engine,
         )
+
+        # Apply initial directive if available
+        if self.strategist and self.strategist.current_directive:
+            self.autotrader._apply_directive(self.strategist.current_directive)
 
         self.logger.info(
             "AutoTrader initialised (mode=%s, symbols=%s)",
@@ -796,7 +825,7 @@ class TradingPipeline:
 
         base_result: Dict[str, Any] = {
             "symbol": symbol,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "elapsed_seconds": 0.0,
             "features": {},
             "foundation_forecast": None,
@@ -865,7 +894,7 @@ class TradingPipeline:
 
         result: Dict[str, Any] = {
             "symbol": symbol,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "chain_summary": None,
             "greeks": None,
             "vol_surface": None,
@@ -1080,7 +1109,7 @@ class TradingPipeline:
     def status(self) -> Dict[str, Any]:
         info: Dict[str, Any] = {
             "mode": self.mode,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "llm_client": type(self.llm_client).__name__ if self.llm_client else "unavailable",
             "foundation_model": (
                 type(self.foundation_model).__name__

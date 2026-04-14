@@ -111,6 +111,7 @@ class ThesisGenerator:
         current_spec: StrategySpec,
         current_performance: Dict[str, float],
         experiment_history: List[ExperimentResult],
+        strategist_guidance: str = "",
     ) -> StrategyThesis:
         """Generate a strategy modification thesis.
 
@@ -131,7 +132,8 @@ class ThesisGenerator:
             Proposed modification with new signal code.
         """
         prompt = self._build_prompt(
-            event, current_spec, current_performance, experiment_history
+            event, current_spec, current_performance, experiment_history,
+            strategist_guidance,
         )
 
         thesis = StrategyThesis(description="pending")
@@ -173,6 +175,7 @@ class ThesisGenerator:
         current_spec: StrategySpec,
         performance: Dict[str, float],
         history: List[ExperimentResult],
+        strategist_guidance: str = "",
     ) -> str:
         """Build the prompt for thesis generation."""
         # Format experiment history like autoresearch's results.tsv
@@ -203,10 +206,10 @@ Composite Score: {performance.get('composite_score', 0):.6f}
 {history_str}
 ```
 
-## Your Task
+{"## Portfolio Strategist Guidance" + chr(10) + strategist_guidance + chr(10) if strategist_guidance else ""}## Your Task
 Propose a SINGLE modification to the signal function that you believe will improve \
 the composite score. Consider the market event, current performance weaknesses, \
-and what has been tried before (don't repeat failures).
+{"the portfolio strategist guidance above, " if strategist_guidance else ""}and what has been tried before (don't repeat failures).
 
 Respond with the JSON object described in the system prompt. The signal_code must be \
 a complete, self-contained function."""
