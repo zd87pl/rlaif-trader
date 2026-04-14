@@ -153,15 +153,33 @@ class TradingPipeline:
             self.logger.warning("Preprocessor unavailable: %s", exc)
             self.preprocessor = None
 
-        try:
-            settings = get_settings()
-            self.data_client = AlpacaDataClient(
-                api_key=settings.alpaca_api_key or None,
-                secret_key=settings.alpaca_secret_key or None,
-            )
-        except Exception as exc:
-            self.logger.warning("Market data client unavailable: %s", exc)
-            self.data_client = None
+        # Data client selection: CCXT (free, crypto) -> Alpaca (equities) -> None
+        data_source = os.getenv("DATA_SOURCE", "auto").lower()
+        self.data_client = None
+
+        if data_source in ("ccxt", "auto"):
+            try:
+                from src.data.ingestion.ccxt_client import CCXTDataClient
+                exchange = os.getenv("CCXT_EXCHANGE", "kraken")
+                self.data_client = CCXTDataClient(exchange=exchange)
+                self.logger.info("Data client: CCXT (%s) — free, no API key", exchange)
+            except Exception as exc:
+                if data_source == "ccxt":
+                    self.logger.warning("CCXT data client failed: %s", exc)
+                else:
+                    self.logger.debug("CCXT not available, trying Alpaca: %s", exc)
+
+        if self.data_client is None and data_source in ("alpaca", "auto"):
+            try:
+                settings = get_settings()
+                self.data_client = AlpacaDataClient(
+                    api_key=settings.alpaca_api_key or None,
+                    secret_key=settings.alpaca_secret_key or None,
+                )
+                self.logger.info("Data client: Alpaca")
+            except Exception as exc:
+                self.logger.warning("Market data client unavailable: %s", exc)
+                self.data_client = None
 
     def _init_features(self) -> None:
         feat_cfg = self.config.get("features", {})

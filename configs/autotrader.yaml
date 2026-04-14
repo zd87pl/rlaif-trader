@@ -27,9 +27,9 @@ autotrader:
     time_budget_seconds: 300      # 5 min per experiment (autoresearch default)
     backtest_lookback_months: 6
     symbols:
-      - BTCUSDT
-      - ETHUSDT
-      - SOLUSDT
+      - BTC/USD
+      - ETH/USD
+      - SOL/USD
     commission_bps: 5.0           # 0.05% commission
     slippage_bps: 2.0             # 0.02% slippage
     composite_weights:
