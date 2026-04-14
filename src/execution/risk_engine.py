@@ -54,6 +54,11 @@ class RiskEngine:
             else:
                 # numeric: pick the more conservative (smaller) value
                 self._config[key] = min(self._config.get(key, safe_val), safe_val)
+        self._base_limits: Dict[str, float] = {
+            "max_total_exposure_pct": float(self._config["max_total_exposure_pct"]),
+            "max_position_risk_pct": float(self._config["max_position_risk_pct"]),
+            "max_trades_per_day": int(self._config["max_trades_per_day"]),
+        }
 
         # ── mutable state (reset-able) ───────────────────────────────────
         self._lock = threading.Lock()
@@ -326,20 +331,20 @@ class RiskEngine:
         applied = {}
         with self._lock:
             if max_exposure_pct is not None:
-                capped = min(max_exposure_pct, _IMMUTABLE_DEFAULTS.get(
-                    "max_total_exposure_pct", 0.60))
-                # Also cap at the original config value
-                capped = min(capped, 0.60)
+                capped = min(max_exposure_pct, self._base_limits["max_total_exposure_pct"])
                 self._config["max_total_exposure_pct"] = capped
                 applied["max_total_exposure_pct"] = capped
 
             if max_position_pct is not None:
-                capped = min(max_position_pct, _IMMUTABLE_DEFAULTS["max_position_risk_pct"])
+                capped = min(max_position_pct, self._base_limits["max_position_risk_pct"])
                 self._config["max_position_risk_pct"] = capped
                 applied["max_position_risk_pct"] = capped
 
             if max_trades_per_day is not None:
-                self._config["max_trades_per_day"] = max(1, max_trades_per_day)
+                self._config["max_trades_per_day"] = min(
+                    max(1, max_trades_per_day),
+                    self._base_limits["max_trades_per_day"],
+                )
                 applied["max_trades_per_day"] = self._config["max_trades_per_day"]
 
         if applied:

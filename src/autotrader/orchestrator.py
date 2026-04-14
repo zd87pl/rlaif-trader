@@ -70,6 +70,8 @@ class ExperimentOrchestrator:
         time_budget_seconds: int = 300,
         strategist: Any = None,
         risk_engine: Any = None,
+        auto_reassess: bool = True,
+        reassess_interval_minutes: Optional[int] = None,
     ):
         self.sentinel = sentinel
         self.thesis_gen = thesis_gen
@@ -83,6 +85,8 @@ class ExperimentOrchestrator:
         self.time_budget_seconds = time_budget_seconds
         self.strategist = strategist
         self.risk_engine = risk_engine
+        self.auto_reassess = auto_reassess
+        self.reassess_interval_minutes = reassess_interval_minutes
 
         # State
         self._running = False
@@ -177,8 +181,8 @@ class ExperimentOrchestrator:
         # Update improvement threshold
         self.improvement_threshold = directive.improvement_threshold
         # Update experiment frequency (mode)
-        freq_map = {"continuous": "continuous", "hourly": "hourly", "4h": "hourly", "daily": "hourly"}
-        self.mode = freq_map.get(directive.experiment_frequency, self.mode)
+        if directive.experiment_frequency in {"continuous", "hourly", "4h", "daily", "on_event"}:
+            self.mode = directive.experiment_frequency
         # Inject thesis guidance
         self._thesis_guidance = directive.thesis_guidance or ""
         # Update risk engine
@@ -208,7 +212,7 @@ class ExperimentOrchestrator:
         self._iteration_count += 1
 
         # Periodic strategist reassessment
-        if self.strategist and self.strategist.needs_reassessment():
+        if self.auto_reassess and self.strategist and self.strategist.needs_reassessment():
             try:
                 portfolio_state = portfolio_state_fn() if portfolio_state_fn else None
                 directive = self.strategist.assess(
@@ -216,16 +220,22 @@ class ExperimentOrchestrator:
                     current_positions=portfolio_state.get("positions", []) if portfolio_state else None,
                     risk_preference=self.strategist._current_directive.risk_preference
                         if self.strategist._current_directive else "moderate",
+                    reassess_after_minutes_override=self.reassess_interval_minutes,
                 )
                 self._apply_directive(directive)
             except Exception as e:
                 logger.debug("Strategist reassessment failed: %s", e)
 
         # Rate control based on mode
-        if self.mode == "hourly":
+        cadence_seconds = {
+            "hourly": 3600,
+            "4h": 4 * 3600,
+            "daily": 24 * 3600,
+        }.get(self.mode)
+        if cadence_seconds is not None:
             elapsed = time.time() - self._last_experiment_time
-            if elapsed < 3600:
-                time.sleep(min(30, 3600 - elapsed))
+            if elapsed < cadence_seconds:
+                time.sleep(min(30, cadence_seconds - elapsed))
                 return
 
         # Check safety

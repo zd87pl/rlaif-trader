@@ -88,6 +88,21 @@ class TradingPipeline:
 
         self.logger.info("Initialising TradingPipeline mode=%s", mode)
 
+        # Load .env.local settings into os.environ so they're available
+        # to all subsystems (ClaudeClient, get_settings(), etc.)
+        try:
+            from src.autotrader.settings_manager import SettingsManager
+            sm = SettingsManager()
+            for defn in sm.get_all_masked():
+                key = defn["key"]
+                if defn["source"] == "local" and key not in os.environ:
+                    raw = sm.get(key)
+                    if raw:
+                        os.environ[key] = raw
+            self.logger.info("Loaded %d settings from .env.local", sum(1 for d in sm.get_all_masked() if d["source"] == "local"))
+        except Exception:
+            pass
+
         self._init_llm_client()
         self._init_data()
         self._init_features()
@@ -106,7 +121,9 @@ class TradingPipeline:
     # ------------------------------------------------------------------
     def _init_llm_client(self) -> None:
         try:
-            from src.agents import create_client, get_default_client
+            # Import directly from factory to avoid pulling in heavy deps
+            # (RAGSystem -> faiss, etc.) that may not be installed
+            from src.agents.llm_client_factory import create_client, get_default_client
         except Exception as exc:
             self.logger.warning("LLM client factory unavailable: %s", exc)
             self.llm_client = None
@@ -153,15 +170,33 @@ class TradingPipeline:
             self.logger.warning("Preprocessor unavailable: %s", exc)
             self.preprocessor = None
 
-        try:
-            settings = get_settings()
-            self.data_client = AlpacaDataClient(
-                api_key=settings.alpaca_api_key or None,
-                secret_key=settings.alpaca_secret_key or None,
-            )
-        except Exception as exc:
-            self.logger.warning("Market data client unavailable: %s", exc)
-            self.data_client = None
+        # Data client selection: CCXT (free, crypto) -> Alpaca (equities) -> None
+        data_source = os.getenv("DATA_SOURCE", "auto").lower()
+        self.data_client = None
+
+        if data_source in ("ccxt", "auto"):
+            try:
+                from src.data.ingestion.ccxt_client import CCXTDataClient
+                exchange = os.getenv("CCXT_EXCHANGE", "kraken")
+                self.data_client = CCXTDataClient(exchange=exchange)
+                self.logger.info("Data client: CCXT (%s) — free, no API key", exchange)
+            except Exception as exc:
+                if data_source == "ccxt":
+                    self.logger.warning("CCXT data client failed: %s", exc)
+                else:
+                    self.logger.debug("CCXT not available, trying Alpaca: %s", exc)
+
+        if self.data_client is None and data_source in ("alpaca", "auto"):
+            try:
+                settings = get_settings()
+                self.data_client = AlpacaDataClient(
+                    api_key=settings.alpaca_api_key or None,
+                    secret_key=settings.alpaca_secret_key or None,
+                )
+                self.logger.info("Data client: Alpaca")
+            except Exception as exc:
+                self.logger.warning("Market data client unavailable: %s", exc)
+                self.data_client = None
 
     def _init_features(self) -> None:
         feat_cfg = self.config.get("features", {})
@@ -558,13 +593,21 @@ class TradingPipeline:
             from src.autotrader.settings_manager import SettingsManager
             settings_mgr = SettingsManager()
             risk_pref = settings_mgr.get("RISK_PREFERENCE") or "moderate"
+            auto_reassess = settings_mgr.get("AUTO_REASSESS").strip().lower() != "false"
+            try:
+                reassess_interval_min = int(settings_mgr.get("REASSESS_INTERVAL_MIN") or "60")
+            except ValueError:
+                reassess_interval_min = 60
 
             self.strategist = PortfolioStrategist(
                 llm_client=self.llm_client,
                 broker=self.broker,
             )
             # Initial assessment
-            directive = self.strategist.assess(risk_preference=risk_pref)
+            directive = self.strategist.assess(
+                risk_preference=risk_pref,
+                reassess_after_minutes_override=reassess_interval_min,
+            )
             self.logger.info(
                 "Portfolio strategist: style=%s, risk=%.0f%%, tier=%s",
                 directive.strategy_style,
@@ -573,6 +616,8 @@ class TradingPipeline:
             )
         except Exception as exc:
             self.logger.debug("Portfolio strategist unavailable: %s", exc)
+            auto_reassess = True
+            reassess_interval_min = 60
 
         # RLAIF bridge: connect experiment outcomes to reward model training
         rlaif_callback = None
@@ -601,6 +646,8 @@ class TradingPipeline:
             rlaif_callback=rlaif_callback,
             strategist=self.strategist,
             risk_engine=self.risk_engine,
+            auto_reassess=auto_reassess,
+            reassess_interval_minutes=reassess_interval_min,
         )
 
         # Apply initial directive if available

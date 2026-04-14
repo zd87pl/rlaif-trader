@@ -141,8 +141,7 @@ class TradingScheduler:
         self._telemetry_dir.mkdir(parents=True, exist_ok=True)
 
         # Signal handlers for graceful shutdown
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        self._install_signal_handlers()
 
         logger.info(
             f"TradingScheduler initialized: {len(self._symbols)} symbols, "
@@ -224,6 +223,18 @@ class TradingScheduler:
         """Request graceful shutdown."""
         logger.info("Scheduler shutdown requested")
         self._shutdown_event.set()
+
+    def _install_signal_handlers(self) -> None:
+        """Install signal handlers only when running on the main interpreter thread."""
+        if threading.current_thread() is not threading.main_thread():
+            logger.debug("Skipping scheduler signal handlers outside the main thread")
+            return
+
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(signum, self._signal_handler)
+            except ValueError as exc:
+                logger.debug("Skipping signal handler installation for %s: %s", signum, exc)
 
     def _signal_handler(self, signum: int, frame) -> None:
         """Handle SIGINT/SIGTERM for graceful shutdown."""

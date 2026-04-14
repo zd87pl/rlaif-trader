@@ -1,4 +1,6 @@
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 
 import pandas as pd
 
@@ -189,3 +191,29 @@ def test_pipeline_backtest_uses_benchmark_runner(monkeypatch):
     assert "strategy_cumulative_return" in result["metrics"]
     assert "buy_and_hold_cumulative_return" in result["metrics"]
     assert len(result["trades"]) == 2
+
+
+def test_scheduler_can_initialize_off_main_thread(tmp_path):
+    errors = Queue()
+
+    def build_scheduler():
+        try:
+            TradingScheduler(
+                config={
+                    "symbols": ["AAPL"],
+                    "dry_run": True,
+                    "telemetry_dir": str(tmp_path),
+                },
+                pipeline=FakePipeline(),
+                oms=None,
+                risk_engine=None,
+                alert_manager=None,
+            )
+        except Exception as exc:  # pragma: no cover - assertion path
+            errors.put(exc)
+
+    thread = Thread(target=build_scheduler)
+    thread.start()
+    thread.join()
+
+    assert errors.empty()

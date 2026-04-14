@@ -13,8 +13,9 @@ class Config(BaseSettings):
     """Main configuration class using Pydantic settings"""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     # API Keys

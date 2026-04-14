@@ -367,17 +367,14 @@ class BinanceBroker(BrokerInterface):
         interval: str = "1d",
         limit: int = 500,
     ) -> pd.DataFrame:
-        """Fetch OHLCV candle data from Binance.
+        """Deprecated: use CCXTDataClient for market data instead.
 
-        Parameters
-        ----------
-        symbol : str
-            Trading pair (e.g., "BTCUSDT").
-        interval : str
-            Candle interval: 1m, 5m, 15m, 1h, 4h, 1d, 1w
-        limit : int
-            Number of candles (max 1000).
+        Kept for backward compatibility. For new code, use:
+            from src.data.ingestion.ccxt_client import CCXTDataClient
+            client = CCXTDataClient(exchange="binance")
+            client.download_bars("BTC/USDT", start, end, "1Day")
         """
+        logger.warning("BinanceBroker.get_klines() is deprecated — use CCXTDataClient")
         try:
             if self.futures:
                 klines = self._client.futures_klines(

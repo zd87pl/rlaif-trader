@@ -27,7 +27,16 @@ logger = get_logger(__name__)
 
 # Lazy imports to avoid requiring both backends installed
 _ClaudeClient = None
+_ClaudeCliClient = None
 _MLXClient = None
+
+
+def _get_claude_cli_client_class():
+    global _ClaudeCliClient
+    if _ClaudeCliClient is None:
+        from .claude_cli_client import ClaudeCliClient
+        _ClaudeCliClient = ClaudeCliClient
+    return _ClaudeCliClient
 
 
 def _get_claude_client_class():
@@ -51,13 +60,15 @@ def _resolve_backend() -> str:
     Determine which LLM backend to use.
 
     Priority:
-    1. LLM_BACKEND env var (mlx | claude)
+    1. LLM_BACKEND env var (claude-cli | claude | mlx)
     2. config.yaml llm.backend field
-    3. Default: 'claude'
+    3. Auto-detect: claude CLI available? -> claude-cli, else claude API
     """
+    valid = ("claude-cli", "claude", "mlx")
+
     # Check env var first
     env_backend = os.environ.get("LLM_BACKEND", "").strip().lower()
-    if env_backend in ("mlx", "claude"):
+    if env_backend in valid:
         logger.info(f"LLM backend from env var LLM_BACKEND: {env_backend}")
         return env_backend
 
@@ -65,15 +76,20 @@ def _resolve_backend() -> str:
     try:
         config = get_config()
         config_backend = get_nested(config, "llm.backend", default=None)
-        if config_backend and str(config_backend).lower() in ("mlx", "claude"):
+        if config_backend and str(config_backend).lower() in valid:
             backend = str(config_backend).lower()
             logger.info(f"LLM backend from config: {backend}")
             return backend
     except Exception as e:
         logger.debug(f"Could not read config for backend: {e}")
 
-    # Default
-    logger.info("LLM backend defaulting to 'claude'")
+    # Auto-detect: prefer claude CLI (no API key needed)
+    import shutil
+    if shutil.which("claude"):
+        logger.info("LLM backend auto-detected: claude-cli (no API key needed)")
+        return "claude-cli"
+
+    logger.info("LLM backend defaulting to 'claude' (API)")
     return "claude"
 
 
@@ -97,7 +113,8 @@ def create_client(
     backend = backend or _resolve_backend()
 
     # Resolve model from config if not provided
-    if model is None:
+    # (skip for claude-cli — it has its own default: opus 4.6)
+    if model is None and backend != "claude-cli":
         try:
             config = get_config()
             if backend == "mlx":
@@ -107,7 +124,15 @@ def create_client(
         except Exception:
             pass
 
-    if backend == "mlx":
+    if backend == "claude-cli":
+        model = model or "claude-opus-4-6"
+        logger.info(f"Creating ClaudeCliClient (model={model})")
+        ClaudeCliClient = _get_claude_cli_client_class()
+        client_kwargs = {"model": model}
+        client_kwargs.update(kwargs)
+        return ClaudeCliClient(**client_kwargs)
+
+    elif backend == "mlx":
         logger.info(f"Creating MLXClient (model={model})")
         MLXClient = _get_mlx_client_class()
         client_kwargs = {}
@@ -127,7 +152,7 @@ def create_client(
 
     else:
         raise ValueError(
-            f"Unknown LLM backend: '{backend}'. Must be 'claude' or 'mlx'."
+            f"Unknown LLM backend: '{backend}'. Must be 'claude-cli', 'claude', or 'mlx'."
         )
 
 

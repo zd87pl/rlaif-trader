@@ -73,10 +73,19 @@ class PortfolioDirective:
     improvement_threshold: float = 0.01
 
     # Expectations
-    expected_daily_return: float = 0.001  # 0.1%
-    expected_weekly_return: float = 0.005
+    expected_daily_return: float = 0.003  # 0.3%
+    expected_weekly_return: float = 0.015
     expected_sharpe: float = 1.5
     max_acceptable_drawdown: float = 0.10  # 10%
+
+    # Compound projections (computed from expected_daily_return + wallet_balance)
+    projection_daily_pnl: float = 0.0
+    projection_weekly_pnl: float = 0.0
+    projection_monthly_pnl: float = 0.0
+    projection_yearly_pnl: float = 0.0
+    projection_monthly_balance: float = 0.0
+    projection_yearly_balance: float = 0.0
+    projection_drawdown_dollar: float = 0.0
 
     # Guidance
     symbols_focus: List[str] = field(default_factory=lambda: ["SPY", "QQQ", "AAPL"])
@@ -104,31 +113,40 @@ class PortfolioDirective:
 # ── Deterministic fallback tables ───────────────────────────────────────
 
 _TIER_DEFAULTS = {
-    #                           style          risk%  pos%   check_s  freq      weights                                              threshold  daily_ret  sharpe  dd     symbols                            reassess
+    # ── Crypto-calibrated targets ──────────────────────────────────────
+    # Crypto: 24/7 = 365 trading days, higher vol = more edge to capture.
+    # AI improves over time so targets are "after warm-up" steady state.
+    #
+    # Reality check (conservative = achievable, aggressive = top-decile):
+    #   0.3%/day = ~3x/year compound   (good systematic crypto fund)
+    #   0.5%/day = ~6x/year compound   (exceptional)
+    #   1.0%/day = ~37x/year compound  (only during strong trends)
+    #
+    # Equities are ~40-60% of crypto targets (fewer hours, lower vol).
     "micro": {
-        "conservative": dict(strategy_style="swing",         risk_budget_pct=0.10, max_position_pct=0.02, check_interval_seconds=1800, experiment_frequency="daily",   composite_weights={"sharpe":0.40,"return":0.20,"drawdown":0.30,"hit_rate":0.10}, improvement_threshold=0.02, expected_daily_return=0.0005, expected_sharpe=0.8, max_acceptable_drawdown=0.05),
-        "moderate":     dict(strategy_style="swing",         risk_budget_pct=0.15, max_position_pct=0.02, check_interval_seconds=900,  experiment_frequency="4h",      composite_weights={"sharpe":0.35,"return":0.25,"drawdown":0.25,"hit_rate":0.15}, improvement_threshold=0.015, expected_daily_return=0.001, expected_sharpe=1.0, max_acceptable_drawdown=0.08),
-        "aggressive":   dict(strategy_style="day_trading",   risk_budget_pct=0.25, max_position_pct=0.02, check_interval_seconds=300,  experiment_frequency="hourly",  composite_weights={"sharpe":0.30,"return":0.35,"drawdown":0.20,"hit_rate":0.15}, improvement_threshold=0.01, expected_daily_return=0.002, expected_sharpe=1.2, max_acceptable_drawdown=0.12),
+        "conservative": dict(strategy_style="swing",         risk_budget_pct=0.15, max_position_pct=0.02, check_interval_seconds=900,  experiment_frequency="4h",         composite_weights={"sharpe":0.35,"return":0.25,"drawdown":0.25,"hit_rate":0.15}, improvement_threshold=0.015, expected_daily_return=0.002,  expected_sharpe=1.0, max_acceptable_drawdown=0.08),
+        "moderate":     dict(strategy_style="day_trading",   risk_budget_pct=0.25, max_position_pct=0.02, check_interval_seconds=300,  experiment_frequency="hourly",     composite_weights={"sharpe":0.30,"return":0.30,"drawdown":0.20,"hit_rate":0.20}, improvement_threshold=0.01,  expected_daily_return=0.004,  expected_sharpe=1.3, max_acceptable_drawdown=0.12),
+        "aggressive":   dict(strategy_style="day_trading",   risk_budget_pct=0.40, max_position_pct=0.02, check_interval_seconds=120,  experiment_frequency="continuous", composite_weights={"sharpe":0.25,"return":0.40,"drawdown":0.15,"hit_rate":0.20}, improvement_threshold=0.008, expected_daily_return=0.008,  expected_sharpe=1.5, max_acceptable_drawdown=0.18),
     },
     "small": {
-        "conservative": dict(strategy_style="swing",         risk_budget_pct=0.15, max_position_pct=0.02, check_interval_seconds=900,  experiment_frequency="4h",      composite_weights={"sharpe":0.40,"return":0.20,"drawdown":0.25,"hit_rate":0.15}, improvement_threshold=0.015, expected_daily_return=0.0008, expected_sharpe=1.0, max_acceptable_drawdown=0.06),
-        "moderate":     dict(strategy_style="day_trading",   risk_budget_pct=0.25, max_position_pct=0.02, check_interval_seconds=300,  experiment_frequency="hourly",  composite_weights={"sharpe":0.35,"return":0.30,"drawdown":0.20,"hit_rate":0.15}, improvement_threshold=0.01, expected_daily_return=0.0015, expected_sharpe=1.5, max_acceptable_drawdown=0.10),
-        "aggressive":   dict(strategy_style="day_trading",   risk_budget_pct=0.40, max_position_pct=0.02, check_interval_seconds=120,  experiment_frequency="continuous", composite_weights={"sharpe":0.25,"return":0.40,"drawdown":0.15,"hit_rate":0.20}, improvement_threshold=0.008, expected_daily_return=0.003, expected_sharpe=1.8, max_acceptable_drawdown=0.15),
+        "conservative": dict(strategy_style="swing",         risk_budget_pct=0.20, max_position_pct=0.02, check_interval_seconds=600,  experiment_frequency="4h",         composite_weights={"sharpe":0.35,"return":0.25,"drawdown":0.25,"hit_rate":0.15}, improvement_threshold=0.012, expected_daily_return=0.003,  expected_sharpe=1.2, max_acceptable_drawdown=0.08),
+        "moderate":     dict(strategy_style="day_trading",   risk_budget_pct=0.30, max_position_pct=0.02, check_interval_seconds=180,  experiment_frequency="hourly",     composite_weights={"sharpe":0.30,"return":0.30,"drawdown":0.20,"hit_rate":0.20}, improvement_threshold=0.01,  expected_daily_return=0.005,  expected_sharpe=1.6, max_acceptable_drawdown=0.12),
+        "aggressive":   dict(strategy_style="scalping",      risk_budget_pct=0.45, max_position_pct=0.02, check_interval_seconds=60,   experiment_frequency="continuous", composite_weights={"sharpe":0.25,"return":0.40,"drawdown":0.15,"hit_rate":0.20}, improvement_threshold=0.005, expected_daily_return=0.008,  expected_sharpe=1.8, max_acceptable_drawdown=0.18),
     },
     "medium": {
-        "conservative": dict(strategy_style="swing",         risk_budget_pct=0.20, max_position_pct=0.015, check_interval_seconds=600, experiment_frequency="4h",      composite_weights={"sharpe":0.40,"return":0.25,"drawdown":0.25,"hit_rate":0.10}, improvement_threshold=0.012, expected_daily_return=0.001, expected_sharpe=1.2, max_acceptable_drawdown=0.07),
-        "moderate":     dict(strategy_style="day_trading",   risk_budget_pct=0.30, max_position_pct=0.015, check_interval_seconds=180, experiment_frequency="hourly",  composite_weights={"sharpe":0.35,"return":0.30,"drawdown":0.20,"hit_rate":0.15}, improvement_threshold=0.01, expected_daily_return=0.002, expected_sharpe=1.8, max_acceptable_drawdown=0.10),
-        "aggressive":   dict(strategy_style="scalping",      risk_budget_pct=0.45, max_position_pct=0.015, check_interval_seconds=60,  experiment_frequency="continuous", composite_weights={"sharpe":0.25,"return":0.40,"drawdown":0.15,"hit_rate":0.20}, improvement_threshold=0.005, expected_daily_return=0.004, expected_sharpe=2.0, max_acceptable_drawdown=0.15),
+        "conservative": dict(strategy_style="swing",         risk_budget_pct=0.20, max_position_pct=0.015, check_interval_seconds=600, experiment_frequency="4h",         composite_weights={"sharpe":0.40,"return":0.25,"drawdown":0.25,"hit_rate":0.10}, improvement_threshold=0.012, expected_daily_return=0.003,  expected_sharpe=1.5, max_acceptable_drawdown=0.07),
+        "moderate":     dict(strategy_style="day_trading",   risk_budget_pct=0.35, max_position_pct=0.015, check_interval_seconds=120, experiment_frequency="hourly",     composite_weights={"sharpe":0.30,"return":0.35,"drawdown":0.20,"hit_rate":0.15}, improvement_threshold=0.008, expected_daily_return=0.005,  expected_sharpe=2.0, max_acceptable_drawdown=0.10),
+        "aggressive":   dict(strategy_style="scalping",      risk_budget_pct=0.50, max_position_pct=0.015, check_interval_seconds=30,  experiment_frequency="continuous", composite_weights={"sharpe":0.25,"return":0.40,"drawdown":0.15,"hit_rate":0.20}, improvement_threshold=0.005, expected_daily_return=0.010,  expected_sharpe=2.2, max_acceptable_drawdown=0.15),
     },
     "large": {
-        "conservative": dict(strategy_style="swing",         risk_budget_pct=0.20, max_position_pct=0.01, check_interval_seconds=600,  experiment_frequency="4h",      composite_weights={"sharpe":0.45,"return":0.20,"drawdown":0.25,"hit_rate":0.10}, improvement_threshold=0.015, expected_daily_return=0.0008, expected_sharpe=1.5, max_acceptable_drawdown=0.05),
-        "moderate":     dict(strategy_style="day_trading",   risk_budget_pct=0.30, max_position_pct=0.01, check_interval_seconds=120,  experiment_frequency="hourly",  composite_weights={"sharpe":0.35,"return":0.30,"drawdown":0.20,"hit_rate":0.15}, improvement_threshold=0.01, expected_daily_return=0.0015, expected_sharpe=2.0, max_acceptable_drawdown=0.08),
-        "aggressive":   dict(strategy_style="market_making", risk_budget_pct=0.50, max_position_pct=0.01, check_interval_seconds=30,   experiment_frequency="continuous", composite_weights={"sharpe":0.30,"return":0.35,"drawdown":0.15,"hit_rate":0.20}, improvement_threshold=0.005, expected_daily_return=0.003, expected_sharpe=2.5, max_acceptable_drawdown=0.12),
+        "conservative": dict(strategy_style="day_trading",   risk_budget_pct=0.20, max_position_pct=0.01, check_interval_seconds=300,  experiment_frequency="hourly",     composite_weights={"sharpe":0.40,"return":0.25,"drawdown":0.25,"hit_rate":0.10}, improvement_threshold=0.012, expected_daily_return=0.002,  expected_sharpe=1.8, max_acceptable_drawdown=0.06),
+        "moderate":     dict(strategy_style="day_trading",   risk_budget_pct=0.35, max_position_pct=0.01, check_interval_seconds=120,  experiment_frequency="hourly",     composite_weights={"sharpe":0.35,"return":0.30,"drawdown":0.20,"hit_rate":0.15}, improvement_threshold=0.008, expected_daily_return=0.004,  expected_sharpe=2.2, max_acceptable_drawdown=0.08),
+        "aggressive":   dict(strategy_style="market_making", risk_budget_pct=0.50, max_position_pct=0.01, check_interval_seconds=30,   experiment_frequency="continuous", composite_weights={"sharpe":0.30,"return":0.35,"drawdown":0.15,"hit_rate":0.20}, improvement_threshold=0.005, expected_daily_return=0.007,  expected_sharpe=2.5, max_acceptable_drawdown=0.12),
     },
     "whale": {
-        "conservative": dict(strategy_style="market_making", risk_budget_pct=0.15, max_position_pct=0.005, check_interval_seconds=300, experiment_frequency="hourly",  composite_weights={"sharpe":0.50,"return":0.15,"drawdown":0.25,"hit_rate":0.10}, improvement_threshold=0.02, expected_daily_return=0.0005, expected_sharpe=2.0, max_acceptable_drawdown=0.03),
-        "moderate":     dict(strategy_style="market_making", risk_budget_pct=0.25, max_position_pct=0.005, check_interval_seconds=60,  experiment_frequency="continuous", composite_weights={"sharpe":0.40,"return":0.25,"drawdown":0.20,"hit_rate":0.15}, improvement_threshold=0.01, expected_daily_return=0.001, expected_sharpe=2.5, max_acceptable_drawdown=0.05),
-        "aggressive":   dict(strategy_style="scalping",      risk_budget_pct=0.40, max_position_pct=0.005, check_interval_seconds=15,  experiment_frequency="continuous", composite_weights={"sharpe":0.30,"return":0.35,"drawdown":0.15,"hit_rate":0.20}, improvement_threshold=0.005, expected_daily_return=0.002, expected_sharpe=3.0, max_acceptable_drawdown=0.08),
+        "conservative": dict(strategy_style="market_making", risk_budget_pct=0.15, max_position_pct=0.005, check_interval_seconds=120, experiment_frequency="hourly",     composite_weights={"sharpe":0.45,"return":0.20,"drawdown":0.25,"hit_rate":0.10}, improvement_threshold=0.015, expected_daily_return=0.0015, expected_sharpe=2.0, max_acceptable_drawdown=0.04),
+        "moderate":     dict(strategy_style="market_making", risk_budget_pct=0.25, max_position_pct=0.005, check_interval_seconds=60,  experiment_frequency="continuous", composite_weights={"sharpe":0.35,"return":0.30,"drawdown":0.20,"hit_rate":0.15}, improvement_threshold=0.008, expected_daily_return=0.003,  expected_sharpe=2.5, max_acceptable_drawdown=0.06),
+        "aggressive":   dict(strategy_style="scalping",      risk_budget_pct=0.40, max_position_pct=0.005, check_interval_seconds=15,  experiment_frequency="continuous", composite_weights={"sharpe":0.30,"return":0.35,"drawdown":0.15,"hit_rate":0.20}, improvement_threshold=0.005, expected_daily_return=0.005,  expected_sharpe=3.0, max_acceptable_drawdown=0.10),
     },
 }
 
@@ -269,6 +287,7 @@ class PortfolioStrategist:
         market_regime: str = "unknown",
         recent_performance: Optional[Dict[str, float]] = None,
         risk_preference: str = "moderate",
+        reassess_after_minutes_override: Optional[int] = None,
     ) -> PortfolioDirective:
         """Produce a PortfolioDirective for the current situation.
 
@@ -312,6 +331,12 @@ class PortfolioStrategist:
             directive = self._deterministic_assess(
                 wallet_balance, capital_tier, market_regime,
                 recent_performance, risk_preference,
+            )
+
+        if reassess_after_minutes_override is not None:
+            directive.reassess_after_minutes = max(
+                15,
+                min(480, int(reassess_after_minutes_override)),
             )
 
         # Record
@@ -430,7 +455,30 @@ Remember: be realistic about expectations. A ${balance:,.0f} account {"cannot ge
         data["market_regime"] = regime
         data["risk_preference"] = risk_pref
 
-        return PortfolioDirective.from_dict(data)
+        directive = PortfolioDirective.from_dict(data)
+        self._compute_projections(directive)
+        return directive
+
+    @staticmethod
+    def _compute_projections(d: PortfolioDirective) -> None:
+        """Fill compound projection fields on a directive."""
+        bal = d.wallet_balance or 0
+        r = d.expected_daily_return
+        # Daily P&L (simple, on deployed capital)
+        d.projection_daily_pnl = round(bal * r, 2)
+        # Weekly (compound over 7 trading days for crypto)
+        d.expected_weekly_return = (1 + r) ** 7 - 1
+        d.projection_weekly_pnl = round(bal * d.expected_weekly_return, 2)
+        # Monthly (30 days compound)
+        monthly_r = (1 + r) ** 30 - 1
+        d.projection_monthly_pnl = round(bal * monthly_r, 2)
+        d.projection_monthly_balance = round(bal * (1 + monthly_r), 2)
+        # Yearly (365 days compound)
+        yearly_r = (1 + r) ** 365 - 1
+        d.projection_yearly_pnl = round(bal * yearly_r, 2)
+        d.projection_yearly_balance = round(bal * (1 + yearly_r), 2)
+        # Max drawdown in dollars
+        d.projection_drawdown_dollar = round(bal * d.max_acceptable_drawdown, 2)
 
     def _deterministic_assess(
         self,
@@ -503,7 +551,7 @@ Remember: be realistic about expectations. A ${balance:,.0f} account {"cannot ge
         else:
             symbols = ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "TSLA", "META"]
 
-        return PortfolioDirective(
+        directive = PortfolioDirective(
             strategy_style=style,
             risk_budget_pct=base["risk_budget_pct"],
             max_position_pct=base.get("max_position_pct", 0.02),
@@ -512,7 +560,6 @@ Remember: be realistic about expectations. A ${balance:,.0f} account {"cannot ge
             composite_weights=base["composite_weights"],
             improvement_threshold=base.get("improvement_threshold", 0.01),
             expected_daily_return=base["expected_daily_return"],
-            expected_weekly_return=base["expected_daily_return"] * 5,
             expected_sharpe=base.get("expected_sharpe", 1.5),
             max_acceptable_drawdown=base.get("max_acceptable_drawdown", 0.10),
             symbols_focus=symbols,
@@ -525,6 +572,20 @@ Remember: be realistic about expectations. A ${balance:,.0f} account {"cannot ge
             market_regime=regime,
             risk_preference=risk_pref,
         )
+        self._compute_projections(directive)
+
+        # Enrich reasoning with projections
+        directive.reasoning += (
+            f"\n\nProjected growth (compound):\n"
+            f"  Daily:   ${directive.projection_daily_pnl:,.2f} ({directive.expected_daily_return*100:.2f}%)\n"
+            f"  Weekly:  ${directive.projection_weekly_pnl:,.2f} ({directive.expected_weekly_return*100:.2f}%)\n"
+            f"  Monthly: ${directive.projection_monthly_pnl:,.2f} -> ${directive.projection_monthly_balance:,.0f}\n"
+            f"  Yearly:  ${directive.projection_yearly_pnl:,.2f} -> ${directive.projection_yearly_balance:,.0f}\n"
+            f"  Max risk: ${directive.projection_drawdown_dollar:,.2f} drawdown "
+            f"({directive.max_acceptable_drawdown*100:.0f}% of capital)"
+        )
+
+        return directive
 
     def status(self) -> Dict[str, Any]:
         d = self._current_directive

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -310,7 +310,7 @@ class ChatRouter:
 
     def _save_alpha_note(self, note: str) -> str:
         payload = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "note": note,
         }
         with open(self.notes_path, "a", encoding="utf-8") as handle:
@@ -330,7 +330,7 @@ class ChatRouter:
         return "\n".join(output)
 
     def _show_today_telemetry(self) -> str:
-        today = datetime.utcnow().date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         counts: Dict[str, int] = {}
         for path in self.telemetry_dir.glob("*.jsonl"):
             count = 0
@@ -486,7 +486,7 @@ class ChatRouter:
 
     @staticmethod
     def _extract_date_range(lower_text: str) -> tuple[str, str]:
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         if "last year" in lower_text:
             end = today
             start = end - timedelta(days=365)

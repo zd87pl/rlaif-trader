@@ -9,9 +9,13 @@ from .sentiment_analyst import SentimentAnalyst
 from .technical_analyst import TechnicalAnalyst
 from .risk_analyst import RiskAnalyst
 from .manager_agent import ManagerAgent
-from .rag_system import RAGSystem
 
-# Lazy import MLX client (not available on all platforms)
+# Lazy imports for heavy dependencies (faiss, mlx, etc.)
+try:
+    from .rag_system import RAGSystem
+except ImportError:
+    RAGSystem = None
+
 try:
     from .mlx_client import MLXClient
 except ImportError:

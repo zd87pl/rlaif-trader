@@ -198,7 +198,8 @@ def create_app(
         )
         if not strat:
             return JSONResponse({"error": "No strategist connected"}, 400)
-        body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        content_type = request.headers.get("content-type", "")
+        body = await request.json() if content_type.startswith("application/json") else {}
         risk_pref = body.get("risk_preference", "moderate")
         wallet = body.get("wallet_balance")
         directive = strat.assess(
@@ -834,6 +835,33 @@ select.setting-input { cursor:pointer; }
     <div class="card"><h3>Risk Budget</h3><div class="val blue" id="adv-risk">-</div><div class="delta" id="adv-exposure">deployed of equity</div></div>
     <div class="card"><h3>Expected Daily</h3><div class="val" id="adv-daily">-</div><div class="delta" id="adv-daily-pct">-</div></div>
     <div class="card"><h3>Target Sharpe</h3><div class="val blue" id="adv-sharpe">-</div></div>
+  </div>
+
+  <!-- Compound projections -->
+  <div class="card" style="margin-bottom:16px;">
+    <h3>Compound Growth Projections</h3>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:10px;text-align:center;">
+      <div>
+        <div style="font-size:0.7em;color:var(--text-dim);text-transform:uppercase;">Weekly</div>
+        <div style="font-size:1.3em;font-weight:700;color:var(--green);margin:4px 0;" id="adv-proj-week">-</div>
+        <div style="font-size:0.72em;color:var(--text-dim);" id="adv-proj-week-pct">-</div>
+      </div>
+      <div>
+        <div style="font-size:0.7em;color:var(--text-dim);text-transform:uppercase;">Monthly</div>
+        <div style="font-size:1.3em;font-weight:700;color:var(--green);margin:4px 0;" id="adv-proj-month">-</div>
+        <div style="font-size:0.72em;color:var(--text-dim);" id="adv-proj-month-bal">-</div>
+      </div>
+      <div>
+        <div style="font-size:0.7em;color:var(--text-dim);text-transform:uppercase;">Yearly</div>
+        <div style="font-size:1.3em;font-weight:700;color:var(--cyan);margin:4px 0;" id="adv-proj-year">-</div>
+        <div style="font-size:0.72em;color:var(--text-dim);" id="adv-proj-year-bal">-</div>
+      </div>
+      <div>
+        <div style="font-size:0.7em;color:var(--text-dim);text-transform:uppercase;">Max Risk</div>
+        <div style="font-size:1.3em;font-weight:700;color:var(--red);margin:4px 0;" id="adv-proj-risk">-</div>
+        <div style="font-size:0.72em;color:var(--text-dim);" id="adv-proj-risk-pct">-</div>
+      </div>
+    </div>
   </div>
 
   <!-- Strategy recommendation -->
@@ -1557,6 +1585,16 @@ async function loadAdvisor() {
     document.getElementById('adv-daily').className = 'val ' + (dailyDollar >= 0 ? 'green' : 'red');
     document.getElementById('adv-daily-pct').textContent = (d.expected_daily_return*100).toFixed(3) + '%/day';
     document.getElementById('adv-sharpe').textContent = d.expected_sharpe.toFixed(1);
+
+    // Projections
+    document.getElementById('adv-proj-week').textContent = '+$' + (d.projection_weekly_pnl||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    document.getElementById('adv-proj-week-pct').textContent = '+' + ((d.expected_weekly_return||0)*100).toFixed(2) + '%';
+    document.getElementById('adv-proj-month').textContent = '+$' + (d.projection_monthly_pnl||0).toLocaleString(undefined,{maximumFractionDigits:0});
+    document.getElementById('adv-proj-month-bal').textContent = '-> $' + (d.projection_monthly_balance||0).toLocaleString(undefined,{maximumFractionDigits:0});
+    document.getElementById('adv-proj-year').textContent = '+$' + (d.projection_yearly_pnl||0).toLocaleString(undefined,{maximumFractionDigits:0});
+    document.getElementById('adv-proj-year-bal').textContent = '-> $' + (d.projection_yearly_balance||0).toLocaleString(undefined,{maximumFractionDigits:0});
+    document.getElementById('adv-proj-risk').textContent = '-$' + (d.projection_drawdown_dollar||0).toLocaleString(undefined,{maximumFractionDigits:0});
+    document.getElementById('adv-proj-risk-pct').textContent = (d.max_acceptable_drawdown*100).toFixed(0) + '% max drawdown';
 
     // Strategy
     const styleMap = {scalping:'Scalping',day_trading:'Day Trading',swing:'Swing Trading',market_making:'Market Making'};

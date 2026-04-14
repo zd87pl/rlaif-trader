@@ -437,7 +437,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 # Main
 # ===============================================================================
 
-if __name__ == "__main__":
+def main() -> None:
     import uvicorn
 
     uvicorn.run(
@@ -446,3 +446,7 @@ if __name__ == "__main__":
         port=8000,
         log_level="info",
     )
+
+
+if __name__ == "__main__":
+    main()

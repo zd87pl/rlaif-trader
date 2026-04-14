@@ -97,6 +97,24 @@ SETTING_DEFS: List[Dict[str, Any]] = [
         "help": "Which broker to use for live trading",
     },
     {
+        "key": "DATA_SOURCE",
+        "label": "Market Data Source",
+        "group": "Broker",
+        "type": "select",
+        "options": ["auto", "ccxt", "alpaca"],
+        "default": "auto",
+        "help": "Where to pull OHLCV data. 'auto' tries CCXT (free) first, then Alpaca.",
+    },
+    {
+        "key": "CCXT_EXCHANGE",
+        "label": "CCXT Exchange",
+        "group": "Broker",
+        "type": "select",
+        "options": ["binance", "bybit", "okx", "kraken", "coinbase", "kucoin"],
+        "default": "kraken",
+        "help": "Which exchange to pull crypto data from (free, no API key needed)",
+    },
+    {
         "key": "BINANCE_TESTNET",
         "label": "Binance Testnet",
         "group": "Broker",
@@ -118,9 +136,9 @@ SETTING_DEFS: List[Dict[str, Any]] = [
         "label": "LLM Backend",
         "group": "LLM",
         "type": "select",
-        "options": ["claude", "mlx", "openai"],
-        "default": "claude",
-        "help": "Which LLM backend for multi-agent analysis",
+        "options": ["claude-cli", "claude", "mlx"],
+        "default": "claude-cli",
+        "help": "claude-cli = uses local claude CLI (no API key), claude = Anthropic API, mlx = local Apple Silicon",
     },
     {
         "key": "MLX_MODEL",
@@ -204,9 +222,9 @@ class SettingsManager:
 
     def get(self, key: str) -> str:
         """Get a setting value. Priority: env var > .env.local > .env > default."""
-        # 1. Real env var (highest priority)
+        # 1. Real env var (highest priority, but skip empty strings)
         env_val = os.environ.get(key)
-        if env_val is not None:
+        if env_val is not None and env_val != "":
             return env_val
         # 2. .env.local
         if key in self._cache:
