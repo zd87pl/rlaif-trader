@@ -136,9 +136,9 @@ SETTING_DEFS: List[Dict[str, Any]] = [
         "label": "LLM Backend",
         "group": "LLM",
         "type": "select",
-        "options": ["claude", "mlx", "openai"],
-        "default": "claude",
-        "help": "Which LLM backend for multi-agent analysis",
+        "options": ["claude-cli", "claude", "mlx"],
+        "default": "claude-cli",
+        "help": "claude-cli = uses local claude CLI (no API key), claude = Anthropic API, mlx = local Apple Silicon",
     },
     {
         "key": "MLX_MODEL",
