@@ -84,6 +84,7 @@ class TradingPipeline:
         self.outcome_tracker = None
         self.options_outcome_tracker = None
         self.scheduler = None
+        self.autotrader = None
 
         self.logger.info("Initialising TradingPipeline mode=%s", mode)
 
@@ -96,6 +97,7 @@ class TradingPipeline:
         self._init_execution()
         self._init_rlaif()
         self._init_scheduler()
+        self._init_autotrader()
 
         self.logger.info("TradingPipeline ready")
 
@@ -353,7 +355,17 @@ class TradingPipeline:
         try:
             if self.mode == "live":
                 broker_name = os.getenv("BROKER", "alpaca")
-                if broker_name == "tradier":
+                if broker_name == "binance":
+                    try:
+                        from src.execution.binance_broker import BinanceBroker
+                        self.broker = BinanceBroker(
+                            testnet=os.getenv("BINANCE_TESTNET", "true").lower() == "true",
+                            futures=os.getenv("BINANCE_FUTURES", "false").lower() == "true",
+                        )
+                    except ImportError:
+                        self.logger.error("python-binance not installed for Binance broker")
+                        self.broker = None
+                elif broker_name == "tradier":
                     self.broker = TradierBroker()
                 else:
                     api_key = os.getenv("ALPACA_API_KEY") or getattr(
@@ -454,6 +466,123 @@ class TradingPipeline:
 
         self.reward_model = None
         self.rlaif_finetuner = None
+
+    def _init_autotrader(self) -> None:
+        try:
+            from src.autotrader import (
+                CompositeMetric,
+                ExperimentLog,
+                ExperimentOrchestrator,
+                ExperimentRunner,
+                MarketSentinel,
+                SafetyGuard,
+                StrategyHotSwapper,
+                ThesisGenerator,
+            )
+        except Exception as exc:
+            self.logger.warning("AutoTrader modules unavailable: %s", exc)
+            return
+
+        at_cfg = {}
+        try:
+            at_cfg = load_config("configs/autotrader.yaml").get("autotrader", {})
+        except Exception:
+            self.logger.debug("autotrader.yaml not found, using defaults")
+
+        if not at_cfg.get("enabled", False):
+            self.logger.info("AutoTrader disabled in config")
+            return
+
+        exp_cfg = at_cfg.get("experiment", {})
+        weights = exp_cfg.get("composite_weights", {})
+        metric = CompositeMetric(
+            sharpe_weight=weights.get("sharpe", 0.35),
+            return_weight=weights.get("return", 0.30),
+            drawdown_weight=weights.get("drawdown", 0.20),
+            hit_rate_weight=weights.get("hit_rate", 0.15),
+        )
+
+        safety_cfg = at_cfg.get("safety", {})
+        safety = SafetyGuard(
+            max_experiments_per_hour=safety_cfg.get("max_experiments_per_hour", 12),
+            max_swaps_per_day=safety_cfg.get("max_swaps_per_day", 6),
+            min_improvement_threshold=safety_cfg.get("min_improvement_threshold", 0.01),
+            max_consecutive_crashes=safety_cfg.get("max_consecutive_crashes", 10),
+        )
+        if self.risk_engine:
+            safety.set_risk_engine(self.risk_engine)
+
+        log_cfg = at_cfg.get("logging", {})
+        experiment_log = ExperimentLog(
+            path=log_cfg.get("results_tsv", "data/autotrader/experiment_results.tsv")
+        )
+
+        runner = ExperimentRunner(
+            data_client=self.data_client,
+            preprocessor=self.preprocessor,
+            technical_engine=self.tech_features,
+            composite_metric=metric,
+            safety=safety,
+            commission_bps=exp_cfg.get("commission_bps", 5.0),
+            slippage_bps=exp_cfg.get("slippage_bps", 2.0),
+            default_symbols=exp_cfg.get("symbols", ["AAPL", "MSFT", "SPY"]),
+            default_lookback_months=exp_cfg.get("backtest_lookback_months", 6),
+        )
+
+        sentinel = MarketSentinel(
+            regime_detector=getattr(self, "regime_detector", None),
+            technical_engine=self.tech_features,
+            data_client=self.data_client,
+            config=at_cfg.get("sentinel", {}),
+        )
+
+        thesis_cfg = at_cfg.get("thesis", {})
+        thesis_gen = ThesisGenerator(
+            claude_client=self.llm_client,
+            model=thesis_cfg.get("llm_model", "claude-sonnet-4-6-20250514"),
+            temperature=thesis_cfg.get("temperature", 0.8),
+        )
+
+        swapper = StrategyHotSwapper(
+            oms=self.oms,
+            risk_engine=self.risk_engine,
+            safety=safety,
+            strategies_dir=log_cfg.get("strategies_dir", "data/autotrader/strategies"),
+            audit_log_path=log_cfg.get("audit_log", "data/autotrader/audit.jsonl"),
+        )
+
+        # RLAIF bridge: connect experiment outcomes to reward model training
+        rlaif_callback = None
+        try:
+            from src.autotrader.rlaif_bridge import RLAIFBridge
+            self.rlaif_bridge = RLAIFBridge(
+                preference_generator=self.preference_gen,
+                reward_model=self.reward_model,
+            )
+            rlaif_callback = self.rlaif_bridge.get_rlaif_callback()
+            self.logger.info("RLAIF bridge connected to autotrader")
+        except Exception as exc:
+            self.logger.debug("RLAIF bridge unavailable: %s", exc)
+            self.rlaif_bridge = None
+
+        self.autotrader = ExperimentOrchestrator(
+            sentinel=sentinel,
+            thesis_gen=thesis_gen,
+            runner=runner,
+            swapper=swapper,
+            safety=safety,
+            log=experiment_log,
+            mode=at_cfg.get("mode", "continuous"),
+            improvement_threshold=exp_cfg.get("improvement_threshold", 0.01),
+            time_budget_seconds=exp_cfg.get("time_budget_seconds", 300),
+            rlaif_callback=rlaif_callback,
+        )
+
+        self.logger.info(
+            "AutoTrader initialised (mode=%s, symbols=%s)",
+            at_cfg.get("mode", "continuous"),
+            exp_cfg.get("symbols", []),
+        )
 
     def _init_scheduler(self) -> None:
         try:
@@ -791,6 +920,44 @@ class TradingPipeline:
             result["recommended_strategies"] = [{"error": str(exc)}]
 
         return result
+
+    def run_autotrader(
+        self,
+        mode: Optional[str] = None,
+    ) -> None:
+        """Start the autonomous strategy experimentation loop.
+
+        This is the main entry point for the self-improving quant trader.
+        It runs the autoresearch-style NEVER STOP loop: detect market events,
+        generate strategy modifications via Claude, backtest them, and
+        hot-swap winners into live trading.
+        """
+        if self.autotrader is None:
+            raise RuntimeError(
+                "AutoTrader not initialised. Check configs/autotrader.yaml"
+            )
+
+        if mode:
+            self.autotrader.mode = mode
+
+        self.logger.info(
+            "Starting AutoTrader (mode=%s)", self.autotrader.mode
+        )
+
+        def portfolio_state_fn():
+            if self.oms:
+                return self.oms.get_portfolio_state()
+            return None
+
+        self.autotrader.run(
+            portfolio_state_fn=portfolio_state_fn,
+        )
+
+    def autotrader_status(self) -> Dict[str, Any]:
+        """Return autotrader status for CLI/API."""
+        if self.autotrader is None:
+            return {"enabled": False, "reason": "not initialised"}
+        return self.autotrader.status()
 
     def run_paper(self):
         self.logger.info("Starting PAPER trading")

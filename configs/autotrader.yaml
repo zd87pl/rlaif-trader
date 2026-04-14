@@ -1,0 +1,59 @@
+# AutoTrader: Autonomous Strategy Experimentation Loop
+#
+# Applies autoresearch-mlx's "edit, run, measure, keep/discard, repeat"
+# pattern to trading strategies. The LLM generates Python signal functions,
+# backtests them in a sandbox, and hot-swaps winners into live trading.
+
+autotrader:
+  enabled: true
+  mode: continuous            # continuous | on_event | hourly
+
+  sentinel:
+    check_interval_seconds: 30
+    regime_sensitivity: 0.5
+    vol_spike_threshold: 25       # VIX-equivalent level
+    vol_spike_delta_std: 2.0      # Z-score for vol rate-of-change
+    drawdown_breach_pct: 5.0      # % drawdown to trigger event
+    pnl_deviation_zscore: 2.0     # Z-score for P&L deviation
+    scheduled_interval_seconds: 1800  # 30-min periodic trigger
+
+  thesis:
+    llm_model: claude-sonnet-4-6-20250514
+    temperature: 0.8
+    max_tokens: 4096
+    max_proposals_per_event: 1
+
+  experiment:
+    time_budget_seconds: 300      # 5 min per experiment (autoresearch default)
+    backtest_lookback_months: 6
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+    commission_bps: 5.0           # 0.05% commission
+    slippage_bps: 2.0             # 0.02% slippage
+    composite_weights:
+      sharpe: 0.35
+      return: 0.30
+      drawdown: 0.20
+      hit_rate: 0.15
+    improvement_threshold: 0.01   # 1% composite score improvement to keep
+
+  safety:
+    max_experiments_per_hour: 12
+    max_swaps_per_day: 6          # YOLO mode: higher limit
+    min_improvement_threshold: 0.01
+    max_consecutive_crashes: 10
+    allowed_imports:
+      - pandas
+      - numpy
+      - math
+      - ta
+      - statistics
+      - functools
+      - collections
+
+  logging:
+    results_tsv: data/autotrader/experiment_results.tsv
+    strategies_dir: data/autotrader/strategies
+    audit_log: data/autotrader/audit.jsonl

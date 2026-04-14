@@ -6,11 +6,17 @@ from .risk_engine import RiskEngine
 from .alerts import AlertManager
 from .scheduler import TradingScheduler
 
+try:
+    from .binance_broker import BinanceBroker
+except ImportError:
+    BinanceBroker = None  # python-binance not installed
+
 __all__ = [
     "BrokerInterface",
     "AlpacaBroker",
     "TradierBroker",
     "PaperBroker",
+    "BinanceBroker",
     "OrderManagementSystem",
     "RiskEngine",
     "AlertManager",
