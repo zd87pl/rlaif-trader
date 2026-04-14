@@ -576,12 +576,24 @@ def autotrader_dashboard(ctx, port):
     _header("AutoTrader Dashboard")
     try:
         import uvicorn
-        from src.autotrader.dashboard import create_app
+        from src.autotrader.dashboard import create_app, wire_orchestrator
         app = create_app()
-        _ok(f"Dashboard starting at http://localhost:{port}")
+
+        # Wire live orchestrator if pipeline initializes
+        try:
+            pipe = _pipeline(config=ctx.obj["config"])
+            if pipe.autotrader:
+                wire_orchestrator(pipe.autotrader)
+                _ok("Orchestrator connected (live status enabled)")
+        except Exception:
+            _warn("Running in view-only mode (no orchestrator)")
+
+        _ok(f"Dashboard at http://localhost:{port}")
+        _ok("Real-time updates via SSE + 5s polling fallback")
+        click.echo()
         uvicorn.run(app, host="0.0.0.0", port=port)
-    except ImportError:
-        _err("Install FastAPI + uvicorn: pip install fastapi uvicorn")
+    except ImportError as exc:
+        _err(f"Install dependencies: pip install fastapi uvicorn sse-starlette\n  ({exc})")
     except Exception as exc:
         _err(f"Dashboard failed: {exc}")
 
