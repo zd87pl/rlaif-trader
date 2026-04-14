@@ -222,9 +222,9 @@ class SettingsManager:
 
     def get(self, key: str) -> str:
         """Get a setting value. Priority: env var > .env.local > .env > default."""
-        # 1. Real env var (highest priority)
+        # 1. Real env var (highest priority, but skip empty strings)
         env_val = os.environ.get(key)
-        if env_val is not None:
+        if env_val is not None and env_val != "":
             return env_val
         # 2. .env.local
         if key in self._cache:
