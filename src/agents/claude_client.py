@@ -99,9 +99,9 @@ class ClaudeClient:
         self.total_output_tokens = 0
         self.total_cost = 0.0
 
-        # Validate model
+        # Log model (accept any model ID — Anthropic adds new ones frequently)
         if model not in self.MODELS:
-            raise ValueError(f"Unknown model: {model}. Choose from {list(self.MODELS.keys())}")
+            logger.info("Using model %s (not in known list, assuming defaults)", model)
 
         logger.info(f"Initialized Claude client with model: {model}")
 

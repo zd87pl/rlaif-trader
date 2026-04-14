@@ -88,6 +88,21 @@ class TradingPipeline:
 
         self.logger.info("Initialising TradingPipeline mode=%s", mode)
 
+        # Load .env.local settings into os.environ so they're available
+        # to all subsystems (ClaudeClient, get_settings(), etc.)
+        try:
+            from src.autotrader.settings_manager import SettingsManager
+            sm = SettingsManager()
+            for defn in sm.get_all_masked():
+                key = defn["key"]
+                if defn["source"] == "local" and key not in os.environ:
+                    raw = sm.get(key)
+                    if raw:
+                        os.environ[key] = raw
+            self.logger.info("Loaded %d settings from .env.local", sum(1 for d in sm.get_all_masked() if d["source"] == "local"))
+        except Exception:
+            pass
+
         self._init_llm_client()
         self._init_data()
         self._init_features()
@@ -106,7 +121,9 @@ class TradingPipeline:
     # ------------------------------------------------------------------
     def _init_llm_client(self) -> None:
         try:
-            from src.agents import create_client, get_default_client
+            # Import directly from factory to avoid pulling in heavy deps
+            # (RAGSystem -> faiss, etc.) that may not be installed
+            from src.agents.llm_client_factory import create_client, get_default_client
         except Exception as exc:
             self.logger.warning("LLM client factory unavailable: %s", exc)
             self.llm_client = None
