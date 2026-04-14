@@ -209,6 +209,135 @@ def create_app(
     async def api_settings_validate():
         return {"issues": settings_mgr.validate()}
 
+    # ── Lab: on-demand backtest runs ───────────────────────────────────
+
+    import threading
+    _lab_state: Dict[str, Any] = {
+        "running": False,
+        "total": 0,
+        "completed": 0,
+        "results": [],
+        "error": None,
+        "best_score": 0.0,
+        "best_desc": "",
+    }
+    _lab_lock = threading.Lock()
+
+    def _lab_worker(
+        n_iterations: int,
+        symbols: List[str],
+        lookback_months: int,
+        time_budget: int,
+    ) -> None:
+        """Run N experiment iterations in a background thread."""
+        from .experiment_runner import ExperimentRunner
+        from .experiment_log import ExperimentLog as LabLog
+        from .safety import SafetyGuard
+        from .sentinel import MarketSentinel
+        from .thesis_generator import ThesisGenerator
+        from .strategy_swapper import StrategyHotSwapper
+        from .orchestrator import ExperimentOrchestrator
+        from .strategy_spec import StrategySpec
+        import tempfile, os
+
+        with _lab_lock:
+            _lab_state["running"] = True
+            _lab_state["total"] = n_iterations
+            _lab_state["completed"] = 0
+            _lab_state["results"] = []
+            _lab_state["error"] = None
+            _lab_state["best_score"] = 0.0
+            _lab_state["best_desc"] = ""
+
+        try:
+            tmpdir = tempfile.mkdtemp(prefix="autotrader_lab_")
+            lab_log = LabLog(path=os.path.join(tmpdir, "lab_results.tsv"))
+            safety = SafetyGuard()
+            runner = ExperimentRunner(
+                default_symbols=symbols,
+                default_lookback_months=lookback_months,
+            )
+            swapper = StrategyHotSwapper(
+                safety=safety,
+                strategies_dir=os.path.join(tmpdir, "strategies"),
+                audit_log_path=os.path.join(tmpdir, "audit.jsonl"),
+            )
+            orchestrator = ExperimentOrchestrator(
+                sentinel=MarketSentinel(),
+                thesis_gen=ThesisGenerator(),
+                runner=runner,
+                swapper=swapper,
+                safety=safety,
+                log=lab_log,
+                improvement_threshold=0.0,
+                time_budget_seconds=time_budget,
+            )
+
+            for i in range(n_iterations):
+                if not _lab_state["running"]:
+                    break  # cancelled
+                result = orchestrator.run_single()
+                entry = {
+                    "iteration": i + 1,
+                    "experiment_id": result.experiment_id,
+                    "composite_score": result.composite_score,
+                    "sharpe_ratio": result.sharpe_ratio,
+                    "cumulative_return": result.cumulative_return,
+                    "max_drawdown": result.max_drawdown,
+                    "hit_rate": result.hit_rate,
+                    "num_trades": result.num_trades,
+                    "duration": result.backtest_duration_seconds,
+                    "status": result.status,
+                    "description": result.description,
+                    "error": result.error,
+                }
+                with _lab_lock:
+                    _lab_state["completed"] = i + 1
+                    _lab_state["results"].append(entry)
+                    if result.composite_score > _lab_state["best_score"]:
+                        _lab_state["best_score"] = result.composite_score
+                        _lab_state["best_desc"] = result.description
+
+                # Also append to the main experiment log so it shows in Monitor
+                log.append(result)
+
+        except Exception as e:
+            with _lab_lock:
+                _lab_state["error"] = str(e)
+        finally:
+            with _lab_lock:
+                _lab_state["running"] = False
+
+    @app.post("/api/lab/run")
+    async def api_lab_run(request: Request):
+        """Start a lab backtest run. Body: {iterations, symbols, lookback_months, time_budget}"""
+        if _lab_state["running"]:
+            return JSONResponse({"error": "Lab is already running"}, 409)
+        body = await request.json()
+        n = min(int(body.get("iterations", 5)), 50)  # cap at 50
+        symbols = body.get("symbols", ["AAPL", "MSFT", "SPY"])
+        lookback = int(body.get("lookback_months", 6))
+        budget = int(body.get("time_budget", 60))
+
+        t = threading.Thread(
+            target=_lab_worker,
+            args=(n, symbols, lookback, budget),
+            daemon=True,
+        )
+        t.start()
+        return {"started": True, "iterations": n, "symbols": symbols}
+
+    @app.get("/api/lab/status")
+    async def api_lab_status():
+        with _lab_lock:
+            return dict(_lab_state)
+
+    @app.post("/api/lab/stop")
+    async def api_lab_stop():
+        with _lab_lock:
+            _lab_state["running"] = False
+        return {"stopped": True}
+
     # ── SSE stream ──────────────────────────────────────────────────────
 
     if _HAS_SSE:
@@ -447,6 +576,7 @@ select.setting-input { cursor:pointer; }
   <div class="hdr-right">
     <span class="ts" id="last-update">--</span>
     <button class="nav-btn" id="btn-monitor" onclick="showPage('monitor')" style="opacity:1">Monitor</button>
+    <button class="nav-btn" id="btn-lab" onclick="showPage('lab')">Lab</button>
     <button class="nav-btn" id="btn-settings" onclick="showPage('settings')">Settings</button>
   </div>
 </div>
@@ -549,6 +679,89 @@ select.setting-input { cursor:pointer; }
   </div>
 </div>
 </div><!-- /page-settings -->
+
+<!-- PAGE: LAB -->
+<div id="page-lab" class="page">
+<div class="settings-wrap" style="max-width:960px;">
+
+  <!-- Config panel -->
+  <h2 style="margin-top:0;">Run Backtest Experiments</h2>
+  <p style="color:var(--text-dim);font-size:0.82em;margin-bottom:16px;">
+    Launch N experiment iterations on paper using synthetic or real market data.
+    Watch the autotrader loop propose strategies, backtest them, and keep/discard in real time.
+  </p>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px;">
+    <div>
+      <label style="font-size:0.72em;color:var(--text-dim);display:block;margin-bottom:4px;">Iterations</label>
+      <input class="setting-input" type="number" id="lab-iterations" value="5" min="1" max="50">
+    </div>
+    <div>
+      <label style="font-size:0.72em;color:var(--text-dim);display:block;margin-bottom:4px;">Symbols (comma-sep)</label>
+      <input class="setting-input" type="text" id="lab-symbols" value="AAPL,MSFT,SPY" placeholder="AAPL,MSFT">
+    </div>
+    <div>
+      <label style="font-size:0.72em;color:var(--text-dim);display:block;margin-bottom:4px;">Lookback (months)</label>
+      <input class="setting-input" type="number" id="lab-lookback" value="6" min="1" max="24">
+    </div>
+    <div>
+      <label style="font-size:0.72em;color:var(--text-dim);display:block;margin-bottom:4px;">Time budget (sec)</label>
+      <input class="setting-input" type="number" id="lab-budget" value="60" min="10" max="600">
+    </div>
+  </div>
+
+  <div style="display:flex;gap:10px;margin-bottom:20px;">
+    <button class="save-btn" id="lab-run-btn" onclick="labRun()" style="background:var(--green);padding:10px 28px;">
+      Run Backtest
+    </button>
+    <button class="save-btn" id="lab-stop-btn" onclick="labStop()" style="background:var(--red);display:none;padding:10px 28px;">
+      Stop
+    </button>
+  </div>
+
+  <!-- Progress -->
+  <div id="lab-progress" style="display:none;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+      <div class="live-dot" style="width:10px;height:10px;"></div>
+      <span style="font-size:0.9em;font-weight:600;" id="lab-progress-text">Running...</span>
+    </div>
+    <div class="gauge" style="margin-bottom:16px;">
+      <div class="gauge-track" style="height:8px;">
+        <div class="gauge-fill" id="lab-progress-bar" style="width:0;background:var(--cyan);transition:width 0.3s;height:100%;border-radius:4px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Summary cards -->
+  <div id="lab-summary" style="display:none;">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;">
+      <div class="card"><h3>Completed</h3><div class="val blue" id="lab-s-done">0</div></div>
+      <div class="card"><h3>Best Score</h3><div class="val green" id="lab-s-best">0</div></div>
+      <div class="card"><h3>Keep Rate</h3><div class="val" id="lab-s-rate">-</div></div>
+      <div class="card"><h3>Best Strategy</h3><div class="val" id="lab-s-desc" style="font-size:0.85em;color:var(--cyan);">-</div></div>
+    </div>
+  </div>
+
+  <!-- Score evolution mini-chart -->
+  <div id="lab-chart-wrap" style="display:none;margin-bottom:16px;">
+    <h2>Score Evolution</h2>
+    <canvas id="lab-chart" style="width:100%;height:200px;border-radius:6px;"></canvas>
+  </div>
+
+  <!-- Results table -->
+  <div id="lab-table-wrap" style="display:none;">
+    <h2>Experiment Results</h2>
+    <table>
+      <thead><tr>
+        <th>#</th><th>Score</th><th>Sharpe</th><th>Return</th><th>DD</th>
+        <th>Hit</th><th>Trades</th><th>Time</th><th>Status</th><th>Description</th>
+      </tr></thead>
+      <tbody id="lab-table"></tbody>
+    </table>
+  </div>
+
+</div>
+</div><!-- /page-lab -->
 
 <!-- MODAL -->
 <div class="modal-bg" id="modal-bg" onclick="if(event.target===this)closeModal()">
@@ -1030,6 +1243,170 @@ async function saveSettings() {
 window.addEventListener('beforeunload', (e) => {
   if (settingsDirty) { e.preventDefault(); e.returnValue = ''; }
 });
+
+// ── Lab: on-demand backtest ─────────────────────────────────────────────
+
+let labPollTimer = null;
+
+async function labRun() {
+  const iterations = parseInt(document.getElementById('lab-iterations').value) || 5;
+  const symbols = document.getElementById('lab-symbols').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const lookback = parseInt(document.getElementById('lab-lookback').value) || 6;
+  const budget = parseInt(document.getElementById('lab-budget').value) || 60;
+
+  try {
+    const resp = await fetch('/api/lab/run', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({iterations, symbols, lookback_months:lookback, time_budget:budget}),
+    }).then(r=>r.json());
+
+    if (resp.error) { alert(resp.error); return; }
+
+    // Switch to running state
+    document.getElementById('lab-run-btn').style.display = 'none';
+    document.getElementById('lab-stop-btn').style.display = 'inline-block';
+    document.getElementById('lab-progress').style.display = 'block';
+    document.getElementById('lab-summary').style.display = 'block';
+    document.getElementById('lab-chart-wrap').style.display = 'block';
+    document.getElementById('lab-table-wrap').style.display = 'block';
+
+    // Start polling
+    labPollTimer = setInterval(labPoll, 1500);
+  } catch(e) { alert('Failed to start: '+e); }
+}
+
+async function labStop() {
+  await fetch('/api/lab/stop', {method:'POST'});
+}
+
+async function labPoll() {
+  try {
+    const st = await fetch('/api/lab/status').then(r=>r.json());
+
+    // Progress
+    const pct = st.total > 0 ? (st.completed / st.total * 100) : 0;
+    document.getElementById('lab-progress-bar').style.width = pct+'%';
+    document.getElementById('lab-progress-text').textContent =
+      st.running ? `Running experiment ${st.completed+1} of ${st.total}...` :
+      st.error ? `Error: ${st.error}` :
+      `Completed ${st.completed} of ${st.total} experiments`;
+
+    // Summary
+    document.getElementById('lab-s-done').textContent = st.completed;
+    document.getElementById('lab-s-best').textContent = st.best_score.toFixed(4);
+    const kept = st.results.filter(r=>r.status==='keep').length;
+    const rate = st.completed > 0 ? (kept/st.completed*100).toFixed(0) : '-';
+    const rateEl = document.getElementById('lab-s-rate');
+    rateEl.textContent = rate + '%';
+    rateEl.className = 'val ' + (parseInt(rate) > 50 ? 'green' : parseInt(rate) > 20 ? 'yellow' : 'red');
+    document.getElementById('lab-s-desc').textContent = st.best_desc || '-';
+
+    // Table
+    const tbody = document.getElementById('lab-table');
+    tbody.innerHTML = st.results.map(r => {
+      const sc = r.status==='keep'?'var(--green)':r.status==='discard'?'var(--yellow)':'var(--red)';
+      return `<tr class="row-${r.status}">
+        <td>${r.iteration}</td>
+        <td>${r.composite_score.toFixed(4)}</td>
+        <td style="color:${r.sharpe_ratio>=0?'var(--green)':'var(--red)'}">${r.sharpe_ratio.toFixed(3)}</td>
+        <td style="color:${r.cumulative_return>=0?'var(--green)':'var(--red)'}">${(r.cumulative_return*100).toFixed(2)}%</td>
+        <td>${(r.max_drawdown*100).toFixed(2)}%</td>
+        <td>${r.hit_rate.toFixed(3)}</td>
+        <td>${r.num_trades}</td>
+        <td>${r.duration.toFixed(1)}s</td>
+        <td style="color:${sc}">${r.status}</td>
+        <td title="${r.description}">${(r.description||'').slice(0,40)}</td>
+      </tr>`;
+    }).join('');
+
+    // Mini chart
+    drawLabChart(st.results);
+
+    // Done?
+    if (!st.running) {
+      clearInterval(labPollTimer);
+      labPollTimer = null;
+      document.getElementById('lab-run-btn').style.display = 'inline-block';
+      document.getElementById('lab-stop-btn').style.display = 'none';
+      if (!st.error) {
+        document.getElementById('lab-progress-text').textContent =
+          `Done! ${st.completed} experiments, best score ${st.best_score.toFixed(4)}`;
+      }
+      // Refresh monitor page data
+      loadAll();
+    }
+  } catch(e) { console.error('labPoll:', e); }
+}
+
+function drawLabChart(results) {
+  if (!results.length) return;
+  const canvas = document.getElementById('lab-chart');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const scores = results.map(r=>r.composite_score);
+  const pad = {t:14,r:10,b:16,l:46};
+  const maxS = Math.max(...scores)*1.08 || 1;
+  const minS = Math.min(0, Math.min(...scores)*0.95);
+  const xScale = i => pad.l + i/(Math.max(results.length-1,1))*(w-pad.l-pad.r);
+  const yScale = v => pad.t + (1-(v-minS)/(maxS-minS||1))*(h-pad.t-pad.b);
+
+  // Grid
+  ctx.strokeStyle = '#161828'; ctx.lineWidth = 0.5;
+  for (let i=0;i<4;i++) {
+    const v = minS + (maxS-minS)*i/3;
+    const y = yScale(v);
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(w-pad.r,y); ctx.stroke();
+    ctx.fillStyle='#555'; ctx.font='9px monospace'; ctx.textAlign='right';
+    ctx.fillText(v.toFixed(3), pad.l-4, y+3);
+  }
+
+  // Area
+  ctx.beginPath();
+  ctx.moveTo(xScale(0), yScale(0));
+  results.forEach((r,i) => ctx.lineTo(xScale(i), yScale(r.composite_score)));
+  ctx.lineTo(xScale(results.length-1), yScale(0));
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, pad.t, 0, h-pad.b);
+  grad.addColorStop(0, 'rgba(0,212,255,0.12)');
+  grad.addColorStop(1, 'rgba(0,212,255,0.01)');
+  ctx.fillStyle = grad; ctx.fill();
+
+  // Line
+  ctx.beginPath(); ctx.strokeStyle='#00d4ff'; ctx.lineWidth=2;
+  results.forEach((r,i) => { i===0?ctx.moveTo(xScale(i),yScale(r.composite_score)):ctx.lineTo(xScale(i),yScale(r.composite_score)); });
+  ctx.stroke();
+
+  // Running best line
+  let best = 0;
+  ctx.beginPath(); ctx.strokeStyle='rgba(0,230,118,0.4)'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+  results.forEach((r,i) => { best=Math.max(best,r.composite_score); i===0?ctx.moveTo(xScale(i),yScale(best)):ctx.lineTo(xScale(i),yScale(best)); });
+  ctx.stroke(); ctx.setLineDash([]);
+
+  // Dots
+  results.forEach((r,i) => {
+    ctx.beginPath(); ctx.arc(xScale(i), yScale(r.composite_score), 4, 0, Math.PI*2);
+    ctx.fillStyle = r.status==='keep'?'#00e676':r.status==='discard'?'#ffd740':'#ff5252';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.lineWidth=1; ctx.stroke();
+  });
+
+  // Labels
+  ctx.font = '9px monospace'; ctx.textAlign = 'center';
+  results.forEach((r,i) => {
+    if (results.length <= 20 || i % Math.ceil(results.length/20) === 0) {
+      ctx.fillStyle = '#555';
+      ctx.fillText(r.iteration, xScale(i), h - 2);
+    }
+  });
+}
 
 // ── Init ───────────────────────────────────────────────────────────────
 loadAll();
